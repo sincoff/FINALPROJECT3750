@@ -1,0 +1,16 @@
+{
+  "name": "battleship-radar",
+  "version": "2.0.0",
+  "description": "Battleship V2+ with server state, state machine, persistence",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.21.0"
+  }
+}

@@ -1,643 +1,411 @@
+require('dotenv').config();
+
 /**
- * Battleship V2+ — Server
- * - Iteration 1: Server-controlled state; New Game vs Restart
- * - Iteration 2: Explicit game state machine (SETUP, PLAYER_TURN, COMPUTER_TURN, GAME_OVER)
- * - Advanced: Persistent storage (JSON); game survives server restart
- * - Advanced AI: Hunt/target behavior; memory of hits (target queue of adjacent cells)
- * - Exam Feature 1: Persistent scoreboard (JSON) — wins, losses, accuracy, streaks
- * - Exam Feature 2: AI difficulty levels (easy, medium, hard)
+ * Multiplayer Battleship API Server
+ * Tech stack: Express.js, pg (PostgreSQL), uuid
  */
 
 const express = require('express');
-const path = require('path');
-const fs = require('fs');
-
-const GRID_SIZE = 10;
-const SHIP_SPECS = [
-  { name: '1×4', length: 4 },
-  { name: '1×3', length: 3 },
-  { name: '1×2', length: 2 },
-];
-
-const STATE = {
-  SETUP: 'SETUP',
-  PLAYER_TURN: 'PLAYER_TURN',
-  COMPUTER_TURN: 'COMPUTER_TURN',
-  GAME_OVER: 'GAME_OVER',
-};
-
-const DIFFICULTY = {
-  EASY: 'easy',
-  MEDIUM: 'medium',
-  HARD: 'hard',
-};
-
-const STATE_FILE = path.join(__dirname, 'game-state.json');
-const SCOREBOARD_FILE = path.join(__dirname, 'scoreboard.json');
-
-function key(r, c) {
-  return `${r},${c}`;
-}
-
-function placeShipRandom(grid, spec) {
-  const vertical = Math.random() < 0.5;
-  const maxRow = vertical ? GRID_SIZE - spec.length : GRID_SIZE - 1;
-  const maxCol = vertical ? GRID_SIZE - 1 : GRID_SIZE - spec.length;
-  if (maxRow < 0 || maxCol < 0) return null;
-  for (let attempt = 0; attempt < 200; attempt++) {
-    const r = Math.floor(Math.random() * (maxRow + 1));
-    const c = Math.floor(Math.random() * (maxCol + 1));
-    const cells = [];
-    for (let i = 0; i < spec.length; i++) {
-      cells.push({ row: vertical ? r + i : r, col: vertical ? c : c + i });
-    }
-    const occupied = new Set(grid.flatMap(s => s.cells.map(c => key(c.row, c.col))));
-    if (cells.every(cell => !occupied.has(key(cell.row, cell.col)))) {
-      return { name: spec.name, length: spec.length, cells };
-    }
-  }
-  return null;
-}
-
-function placeEnemyShips() {
-  const enemy = [];
-  for (const spec of SHIP_SPECS) {
-    let s;
-    while (!(s = placeShipRandom(enemy, spec))) {}
-    enemy.push(s);
-  }
-  return enemy;
-}
-
-function countShipsLeft(ships, hitsSet) {
-  return ships.filter(ship =>
-    ship.cells.some(c => !hitsSet.has(key(c.row, c.col)))
-  ).length;
-}
-
-function validatePlacement(ships) {
-  if (!Array.isArray(ships) || ships.length !== 3) return { ok: false, message: 'Must place exactly 3 ships' };
-  const lengths = ships.map(s => s.length).sort((a, b) => b - a);
-  if (lengths[0] !== 4 || lengths[1] !== 3 || lengths[2] !== 2) return { ok: false, message: 'Ships must be length 4, 3, and 2' };
-  const occupied = new Set();
-  for (const ship of ships) {
-    if (!ship.cells || !Array.isArray(ship.cells)) return { ok: false, message: 'Invalid ship cells' };
-    for (const cell of ship.cells) {
-      const r = cell.row, c = cell.col;
-      if (r < 0 || r >= GRID_SIZE || c < 0 || c >= GRID_SIZE) return { ok: false, message: 'Ship out of bounds' };
-      const k = key(r, c);
-      if (occupied.has(k)) return { ok: false, message: 'Ships overlap' };
-      occupied.add(k);
-    }
-  }
-  return { ok: true };
-}
-
-// In-memory game state (also persisted to JSON)
-let game = {
-  state: STATE.SETUP,
-  winner: null,
-  difficulty: DIFFICULTY.MEDIUM, // default difficulty
-  yourShips: [],
-  enemyShips: [],
-  yourHits: [],
-  yourMisses: [],
-  enemyHits: [],
-  enemyMisses: [],
-  aiTargetQueue: [], // hunt/target: cells adjacent to hits, not yet fired (strings "r,c")
-};
-
-// ========== SCOREBOARD (Persistent JSON) ==========
-
-const DEFAULT_SCOREBOARD = {
-  wins: 0,
-  losses: 0,
-  totalGames: 0,
-  totalPlayerShots: 0,
-  totalPlayerHits: 0,
-  bestGame: null, // fewest shots to win (null = no wins yet)
-  currentWinStreak: 0,
-  longestWinStreak: 0,
-  currentLossStreak: 0,
-  longestLossStreak: 0,
-  gameHistory: [], // last 20 games: { result, shots, hits, difficulty, date }
-};
-
-let scoreboard = { ...DEFAULT_SCOREBOARD };
-
-function loadScoreboard() {
-  try {
-    if (fs.existsSync(SCOREBOARD_FILE)) {
-      const raw = fs.readFileSync(SCOREBOARD_FILE, 'utf8');
-      const data = JSON.parse(raw);
-      // Merge with defaults so new fields are always present
-      scoreboard = { ...DEFAULT_SCOREBOARD, ...data };
-      if (!Array.isArray(scoreboard.gameHistory)) scoreboard.gameHistory = [];
-      return true;
-    }
-  } catch (err) {
-    console.error('Failed to load scoreboard:', err.message);
-  }
-  return false;
-}
-
-function saveScoreboard() {
-  try {
-    const fd = fs.openSync(SCOREBOARD_FILE, 'w');
-    try {
-      fs.writeFileSync(fd, JSON.stringify(scoreboard, null, 2), 'utf8');
-    } finally {
-      fs.closeSync(fd);
-    }
-  } catch (err) {
-    console.error('Failed to save scoreboard:', err.message);
-  }
-}
-
-function recordGameResult(winner) {
-  const playerShots = game.enemyHits.length + game.enemyMisses.length;
-  const playerHits = game.enemyHits.length;
-  const result = winner === 'player' ? 'win' : 'loss';
-
-  scoreboard.totalGames++;
-  scoreboard.totalPlayerShots += playerShots;
-  scoreboard.totalPlayerHits += playerHits;
-
-  if (result === 'win') {
-    scoreboard.wins++;
-    scoreboard.currentWinStreak++;
-    scoreboard.currentLossStreak = 0;
-    if (scoreboard.currentWinStreak > scoreboard.longestWinStreak) {
-      scoreboard.longestWinStreak = scoreboard.currentWinStreak;
-    }
-    if (scoreboard.bestGame === null || playerShots < scoreboard.bestGame) {
-      scoreboard.bestGame = playerShots;
-    }
-  } else {
-    scoreboard.losses++;
-    scoreboard.currentLossStreak++;
-    scoreboard.currentWinStreak = 0;
-    if (scoreboard.currentLossStreak > scoreboard.longestLossStreak) {
-      scoreboard.longestLossStreak = scoreboard.currentLossStreak;
-    }
-  }
-
-  // Keep last 20 games in history
-  scoreboard.gameHistory.push({
-    result,
-    shots: playerShots,
-    hits: playerHits,
-    difficulty: game.difficulty || 'medium',
-    date: new Date().toISOString(),
-  });
-  if (scoreboard.gameHistory.length > 20) {
-    scoreboard.gameHistory = scoreboard.gameHistory.slice(-20);
-  }
-
-  saveScoreboard();
-}
-
-function yourHitsSet() {
-  return new Set(game.yourHits);
-}
-
-function yourMissesSet() {
-  return new Set(game.yourMisses);
-}
-
-function enemyHitsSet() {
-  return new Set(game.enemyHits);
-}
-
-function enemyMissesSet() {
-  return new Set(game.enemyMisses);
-}
-
-function saveState() {
-  try {
-    fs.writeFileSync(STATE_FILE, JSON.stringify(game, null, 2), 'utf8');
-  } catch (err) {
-    console.error('Failed to save state:', err.message);
-  }
-}
-
-function loadState() {
-  try {
-    if (fs.existsSync(STATE_FILE)) {
-      const data = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-      game = data;
-      if (!Array.isArray(game.aiTargetQueue)) game.aiTargetQueue = [];
-      return true;
-    }
-  } catch (err) {
-    console.error('Failed to load state:', err.message);
-  }
-  return false;
-}
-
-function clientState() {
-  return {
-    state: game.state,
-    winner: game.winner,
-    difficulty: game.difficulty || DIFFICULTY.MEDIUM,
-    yourShips: game.yourShips,
-    yourHits: game.yourHits,
-    yourMisses: game.yourMisses,
-    enemyHits: game.enemyHits,
-    enemyMisses: game.enemyMisses,
-    yourShipsLeft: countShipsLeft(game.yourShips, yourHitsSet()),
-    enemyShipsLeft: countShipsLeft(game.enemyShips, enemyHitsSet()),
-  };
-}
-
-// Add adjacent cells (in bounds, not yet fired) to AI target queue
-function addNeighborsToTargetQueue(r, c) {
-  const fired = new Set([...game.yourHits, ...game.yourMisses]);
-  const inQueue = new Set(game.aiTargetQueue);
-  const neighbors = [
-    [r - 1, c],
-    [r + 1, c],
-    [r, c - 1],
-    [r, c + 1],
-  ];
-  for (const [nr, nc] of neighbors) {
-    if (nr < 0 || nr >= GRID_SIZE || nc < 0 || nc >= GRID_SIZE) continue;
-    const k = key(nr, nc);
-    if (fired.has(k) || inQueue.has(k)) continue;
-    game.aiTargetQueue.push(k);
-    inQueue.add(k);
-  }
-}
-
-// Check if any ship was just sunk (all its cells are in yourHits)
-function anyShipSunk() {
-  const hitsSet = yourHitsSet();
-  return game.yourShips.some(ship =>
-    ship.cells.every(cell => hitsSet.has(key(cell.row, cell.col)))
-  );
-}
-
-// ========== AI DIFFICULTY LEVELS ==========
-
-/**
- * EASY AI: Pure random — picks any unfired cell at random.
- * No targeting intelligence at all.
- */
-function runComputerTurnEasy() {
-  const firedSet = new Set([...game.yourHits, ...game.yourMisses]);
-  const possible = [];
-  for (let ri = 0; ri < GRID_SIZE; ri++) {
-    for (let ci = 0; ci < GRID_SIZE; ci++) {
-      if (!firedSet.has(key(ri, ci))) possible.push({ r: ri, c: ci });
-    }
-  }
-  if (possible.length === 0) return;
-  const cell = possible[Math.floor(Math.random() * possible.length)];
-  const r = cell.r;
-  const c = cell.c;
-  const k = key(r, c);
-
-  const hit = game.yourShips.some(ship =>
-    ship.cells.some(cell => cell.row === r && cell.col === c)
-  );
-
-  if (hit) {
-    game.yourHits.push(k);
-    if (countShipsLeft(game.yourShips, yourHitsSet()) === 0) {
-      game.state = STATE.GAME_OVER;
-      game.winner = 'computer';
-    } else {
-      // Easy AI does NOT add neighbors — no targeting memory
-      game.state = STATE.COMPUTER_TURN;
-    }
-  } else {
-    game.yourMisses.push(k);
-    game.state = STATE.PLAYER_TURN;
-  }
-}
-
-/**
- * MEDIUM AI: Hunt/target with memory (existing behavior).
- * Hits add neighbors to queue; sunk ships clear queue.
- */
-function runComputerTurnMedium() {
-  const firedSet = new Set([...game.yourHits, ...game.yourMisses]);
-  let r, c, k;
-
-  // Target mode: prefer queue (cells adjacent to previous hits)
-  while (game.aiTargetQueue.length > 0) {
-    k = game.aiTargetQueue.shift();
-    if (firedSet.has(k)) continue;
-    const [rr, cc] = k.split(',').map(Number);
-    r = rr;
-    c = cc;
-    break;
-  }
-
-  // Hunt mode: random unfired cell
-  if (r === undefined) {
-    const possible = [];
-    for (let ri = 0; ri < GRID_SIZE; ri++) {
-      for (let ci = 0; ci < GRID_SIZE; ci++) {
-        const ki = key(ri, ci);
-        if (!firedSet.has(ki)) possible.push({ r: ri, c: ci });
-      }
-    }
-    if (possible.length === 0) return;
-    const cell = possible[Math.floor(Math.random() * possible.length)];
-    r = cell.r;
-    c = cell.c;
-  }
-
-  k = key(r, c);
-  const hit = game.yourShips.some(ship =>
-    ship.cells.some(cell => cell.row === r && cell.col === c)
-  );
-
-  if (hit) {
-    game.yourHits.push(k);
-    if (countShipsLeft(game.yourShips, yourHitsSet()) === 0) {
-      game.state = STATE.GAME_OVER;
-      game.winner = 'computer';
-      game.aiTargetQueue = [];
-    } else {
-      addNeighborsToTargetQueue(r, c);
-      if (anyShipSunk()) game.aiTargetQueue = [];
-      game.state = STATE.COMPUTER_TURN;
-    }
-  } else {
-    game.yourMisses.push(k);
-    game.state = STATE.PLAYER_TURN;
-  }
-}
-
-/**
- * HARD AI: Hunt/target with probability density + checkerboard hunting.
- * When hunting (no target queue), uses checkerboard pattern to maximize
- * coverage efficiency. When targeting, prioritizes cells along the axis
- * of consecutive hits for smarter ship-finding.
- */
-function runComputerTurnHard() {
-  const firedSet = new Set([...game.yourHits, ...game.yourMisses]);
-  const hitsSet = new Set(game.yourHits);
-  let r, c, k;
-
-  // Target mode: prefer queue, but prioritize cells that continue a line of hits
-  if (game.aiTargetQueue.length > 0) {
-    // Score each queue cell: higher if it continues a line of existing hits
-    const scored = [];
-    for (const qk of game.aiTargetQueue) {
-      if (firedSet.has(qk)) continue;
-      const [qr, qc] = qk.split(',').map(Number);
-      let score = 1;
-      // Check if this cell continues a horizontal or vertical line of hits
-      const dirs = [[-1, 0], [1, 0], [0, -1], [0, 1]];
-      for (const [dr, dc] of dirs) {
-        const nk = key(qr + dr, qc + dc);
-        if (hitsSet.has(nk)) {
-          score += 2;
-          // Extra bonus if two in a row in this direction
-          const nnk = key(qr + 2 * dr, qc + 2 * dc);
-          if (hitsSet.has(nnk)) score += 3;
-        }
-      }
-      scored.push({ r: qr, c: qc, score });
-    }
-
-    if (scored.length > 0) {
-      scored.sort((a, b) => b.score - a.score);
-      // Pick the highest scored cell (break ties randomly among top scorers)
-      const topScore = scored[0].score;
-      const topCells = scored.filter(s => s.score === topScore);
-      const pick = topCells[Math.floor(Math.random() * topCells.length)];
-      r = pick.r;
-      c = pick.c;
-      // Remove from queue
-      game.aiTargetQueue = game.aiTargetQueue.filter(qk => qk !== key(r, c));
-    }
-  }
-
-  // Hunt mode: checkerboard pattern for efficient coverage
-  if (r === undefined) {
-    game.aiTargetQueue = []; // clear any stale queue entries
-    const checkerboard = [];
-    const other = [];
-    for (let ri = 0; ri < GRID_SIZE; ri++) {
-      for (let ci = 0; ci < GRID_SIZE; ci++) {
-        if (firedSet.has(key(ri, ci))) continue;
-        if ((ri + ci) % 2 === 0) {
-          checkerboard.push({ r: ri, c: ci });
-        } else {
-          other.push({ r: ri, c: ci });
-        }
-      }
-    }
-    // Prefer checkerboard cells; fall back to others when exhausted
-    const pool = checkerboard.length > 0 ? checkerboard : other;
-    if (pool.length === 0) return;
-    const cell = pool[Math.floor(Math.random() * pool.length)];
-    r = cell.r;
-    c = cell.c;
-  }
-
-  k = key(r, c);
-  const hit = game.yourShips.some(ship =>
-    ship.cells.some(cell => cell.row === r && cell.col === c)
-  );
-
-  if (hit) {
-    game.yourHits.push(k);
-    if (countShipsLeft(game.yourShips, yourHitsSet()) === 0) {
-      game.state = STATE.GAME_OVER;
-      game.winner = 'computer';
-      game.aiTargetQueue = [];
-    } else {
-      addNeighborsToTargetQueue(r, c);
-      if (anyShipSunk()) game.aiTargetQueue = [];
-      game.state = STATE.COMPUTER_TURN;
-    }
-  } else {
-    game.yourMisses.push(k);
-    game.state = STATE.PLAYER_TURN;
-  }
-}
-
-/**
- * Dispatch to the correct AI based on current game difficulty.
- */
-function runComputerTurn() {
-  switch (game.difficulty) {
-    case DIFFICULTY.EASY:
-      return runComputerTurnEasy();
-    case DIFFICULTY.HARD:
-      return runComputerTurnHard();
-    case DIFFICULTY.MEDIUM:
-    default:
-      return runComputerTurnMedium();
-  }
-}
+const { Pool } = require('pg');
+const { v4: uuidv4 } = require('uuid');
 
 const app = express();
-app.use(express.json());
-app.use(express.static(__dirname));
-
-// GET /api/game — current state (client never sees enemyShips)
-app.get('/api/game', (req, res) => {
-  res.json(clientState());
-});
-
-// POST /api/game/new — new game: new enemy placement, clear player ships and shots, SETUP
-// Accepts optional { difficulty: 'easy' | 'medium' | 'hard' }
-app.post('/api/game/new', (req, res) => {
-  const { difficulty } = req.body || {};
-  game.state = STATE.SETUP;
-  game.winner = null;
-  game.yourShips = [];
-  game.enemyShips = placeEnemyShips();
-  game.yourHits = [];
-  game.yourMisses = [];
-  game.enemyHits = [];
-  game.enemyMisses = [];
-  game.aiTargetQueue = [];
-  // Update difficulty if a valid value is provided
-  if (difficulty && Object.values(DIFFICULTY).includes(difficulty)) {
-    game.difficulty = difficulty;
-  }
-  saveState();
-  res.json(clientState());
-});
-
-// POST /api/game/restart — same boards, clear shots, back to PLAYER_TURN (only if already placed)
-app.post('/api/game/restart', (req, res) => {
-  if (game.yourShips.length !== 3 || !game.enemyShips.length) {
-    return res.status(400).json({ error: 'Cannot restart: place ships and start a game first' });
-  }
-  game.state = STATE.PLAYER_TURN;
-  game.winner = null;
-  game.yourHits = [];
-  game.yourMisses = [];
-  game.enemyHits = [];
-  game.enemyMisses = [];
-  game.aiTargetQueue = [];
-  saveState();
-  res.json(clientState());
-});
-
-// POST /api/game/place — submit placement (valid only in SETUP)
-app.post('/api/game/place', (req, res) => {
-  if (game.state !== STATE.SETUP) {
-    return res.status(400).json({ error: 'Placement only allowed in SETUP' });
-  }
-  const { ships } = req.body || {};
-  const validation = validatePlacement(ships);
-  if (!validation.ok) {
-    return res.status(400).json({ error: validation.message });
-  }
-  game.yourShips = ships;
-  game.state = STATE.PLAYER_TURN;
-  saveState();
-  res.json(clientState());
-});
-
-// POST /api/game/fire — player shot (valid only in PLAYER_TURN)
-app.post('/api/game/fire', (req, res) => {
-  if (game.state !== STATE.PLAYER_TURN) {
-    return res.status(400).json({ error: 'Fire only allowed on your turn' });
-  }
-  const { row, col } = req.body || {};
-  const r = parseInt(row, 10);
-  const c = parseInt(col, 10);
-  if (isNaN(r) || isNaN(c) || r < 0 || r >= GRID_SIZE || c < 0 || c >= GRID_SIZE) {
-    return res.status(400).json({ error: 'Invalid cell' });
-  }
-  const k = key(r, c);
-  if (game.enemyHits.includes(k) || game.enemyMisses.includes(k)) {
-    return res.status(400).json({ error: 'Already fired at this cell' });
-  }
-
-  const hit = game.enemyShips.some(ship =>
-    ship.cells.some(cell => cell.row === r && cell.col === c)
-  );
-  if (hit) {
-    game.enemyHits.push(k);
-    if (countShipsLeft(game.enemyShips, enemyHitsSet()) === 0) {
-      game.state = STATE.GAME_OVER;
-      game.winner = 'player';
-      recordGameResult('player');
-      saveState();
-      return res.json(clientState());
-    }
-    game.state = STATE.PLAYER_TURN;
-    saveState();
-    return res.json(clientState());
-  } else {
-    game.enemyMisses.push(k);
-    game.state = STATE.COMPUTER_TURN;
-  }
-
-  // Run computer turn(s) until miss or game over
-  while (game.state === STATE.COMPUTER_TURN) {
-    runComputerTurn();
-    saveState();
-  }
-
-  // If AI won during its turn(s), record the result
-  if (game.state === STATE.GAME_OVER && game.winner === 'computer') {
-    recordGameResult('computer');
-    saveState();
-  }
-
-  res.json(clientState());
-});
-
-// ========== SCOREBOARD API ENDPOINTS ==========
-
-// GET /api/scoreboard — return current scoreboard
-app.get('/api/scoreboard', (req, res) => {
-  const accuracy = scoreboard.totalPlayerShots > 0
-    ? Math.round((scoreboard.totalPlayerHits / scoreboard.totalPlayerShots) * 100)
-    : 0;
-  res.json({
-    ...scoreboard,
-    accuracy,
-  });
-});
-
-// POST /api/scoreboard/reset — reset all stats
-app.post('/api/scoreboard/reset', (req, res) => {
-  scoreboard = { ...DEFAULT_SCOREBOARD, gameHistory: [] };
-  saveScoreboard();
-  res.json({ ...scoreboard, accuracy: 0 });
-});
-
-// POST /api/game/difficulty — change difficulty mid-setup (only during SETUP)
-app.post('/api/game/difficulty', (req, res) => {
-  const { difficulty } = req.body || {};
-  if (!difficulty || !Object.values(DIFFICULTY).includes(difficulty)) {
-    return res.status(400).json({ error: 'Invalid difficulty. Use easy, medium, or hard.' });
-  }
-  if (game.state !== STATE.SETUP) {
-    return res.status(400).json({ error: 'Difficulty can only be changed during setup.' });
-  }
-  game.difficulty = difficulty;
-  saveState();
-  res.json(clientState());
-});
-
-// Load persisted state and scoreboard on startup
-loadState();
-loadScoreboard();
-if (game.state === STATE.SETUP && !game.enemyShips.length) {
-  game.enemyShips = placeEnemyShips();
-  saveState();
-}
-// Ensure difficulty field exists on legacy state files
-if (!game.difficulty) {
-  game.difficulty = DIFFICULTY.MEDIUM;
-  saveState();
-}
-
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Battleship server at http://localhost:${PORT}`);
+const TEST_MODE = process.env.TEST_MODE || 'false';
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+});
+
+async function initDatabase() {
+  const client = await pool.connect();
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS players (
+        player_id UUID PRIMARY KEY,
+        display_name TEXT UNIQUE NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        total_games INTEGER DEFAULT 0,
+        total_wins INTEGER DEFAULT 0,
+        total_losses INTEGER DEFAULT 0,
+        total_moves INTEGER DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS games (
+        game_id UUID PRIMARY KEY,
+        grid_size INTEGER NOT NULL,
+        max_players INTEGER NOT NULL,
+        status TEXT DEFAULT 'waiting',
+        current_turn_index INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS game_players (
+        game_id UUID REFERENCES games(game_id) ON DELETE CASCADE,
+        player_id UUID REFERENCES players(player_id) ON DELETE CASCADE,
+        turn_order INTEGER NOT NULL,
+        is_eliminated BOOLEAN DEFAULT FALSE,
+        ships_placed BOOLEAN DEFAULT FALSE,
+        PRIMARY KEY (game_id, player_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS ships (
+        id SERIAL PRIMARY KEY,
+        game_id UUID REFERENCES games(game_id) ON DELETE CASCADE,
+        player_id UUID REFERENCES players(player_id) ON DELETE CASCADE,
+        ship_row INTEGER NOT NULL,
+        ship_col INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS moves (
+        id SERIAL PRIMARY KEY,
+        game_id UUID REFERENCES games(game_id) ON DELETE CASCADE,
+        player_id UUID REFERENCES players(player_id) ON DELETE CASCADE,
+        target_player_id UUID REFERENCES players(player_id) ON DELETE CASCADE,
+        move_row INTEGER NOT NULL,
+        move_col INTEGER NOT NULL,
+        result TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    console.log('Database tables initialized.');
+  } finally {
+    client.release();
+  }
+}
+
+// Middleware
+app.use(express.json());
+
+// Test mode middleware: only allow /api/test/* when TEST_MODE=true and X-Test-Password is correct
+app.use('/api/test', (req, res, next) => {
+  if (TEST_MODE !== 'true') {
+    return res.status(403).json({ error: 'Test mode disabled' });
+  }
+  const password = req.headers['x-test-password'];
+  if (password !== 'clemson-test-2026') {
+    return res.status(403).json({ error: 'Invalid or missing test password' });
+  }
+  next();
+});
+
+// Static files
+app.use(express.static('.'));
+
+// ========== Production Endpoints ==========
+
+// POST /api/reset
+app.post('/api/reset', async (req, res) => {
+  try {
+    await pool.query('TRUNCATE players, games, game_players, ships, moves CASCADE');
+    res.status(200).json({ status: 'reset' });
+  } catch (err) {
+    console.error('POST /api/reset:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/players
+app.post('/api/players', async (req, res) => {
+  try {
+    const { username, player_id: clientPlayerId } = req.body || {};
+    if (clientPlayerId !== undefined) {
+      return res.status(400).json({ error: 'Clients may not supply player_id' });
+    }
+    if (!username || typeof username !== 'string' || username.trim() === '') {
+      return res.status(400).json({ error: 'username is required and must be non-empty' });
+    }
+    const displayName = username.trim();
+    const existing = await pool.query(
+      'SELECT player_id FROM players WHERE display_name = $1',
+      [displayName]
+    );
+    if (existing.rows.length > 0) {
+      return res.status(200).json({ player_id: existing.rows[0].player_id });
+    }
+    const playerId = uuidv4();
+    await pool.query(
+      'INSERT INTO players (player_id, display_name) VALUES ($1, $2)',
+      [playerId, displayName]
+    );
+    res.status(201).json({ player_id: playerId });
+  } catch (err) {
+    console.error('POST /api/players:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/players/:id/stats
+app.get('/api/players/:id/stats', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const playerResult = await pool.query(
+      'SELECT total_games, total_wins, total_losses, total_moves FROM players WHERE player_id = $1',
+      [id]
+    );
+    if (playerResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Player not found' });
+    }
+    const row = playerResult.rows[0];
+    const hitsResult = await pool.query(
+      "SELECT COUNT(*)::int AS total_hits FROM moves WHERE player_id = $1 AND result = 'hit'",
+      [id]
+    );
+    const totalHits = hitsResult.rows[0].total_hits || 0;
+    const totalShots = row.total_moves || 0;
+    const accuracy = totalShots > 0 ? totalHits / totalShots : 0;
+    res.status(200).json({
+      games_played: row.total_games || 0,
+      wins: row.total_wins || 0,
+      losses: row.total_losses || 0,
+      total_shots: totalShots,
+      total_hits: totalHits,
+      accuracy,
+    });
+  } catch (err) {
+    console.error('GET /api/players/:id/stats:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/games
+app.post('/api/games', async (req, res) => {
+  try {
+    const { creator_id, grid_size, max_players } = req.body || {};
+    if (grid_size == null || grid_size < 5 || grid_size > 15) {
+      return res.status(400).json({ error: 'grid_size must be between 5 and 15 inclusive' });
+    }
+    if (max_players == null || max_players < 1) {
+      return res.status(400).json({ error: 'max_players must be >= 1' });
+    }
+    if (!creator_id) {
+      return res.status(400).json({ error: 'creator_id is required' });
+    }
+    const creatorCheck = await pool.query(
+      'SELECT player_id FROM players WHERE player_id = $1',
+      [creator_id]
+    );
+    if (creatorCheck.rows.length === 0) {
+      return res.status(400).json({ error: 'creator_id does not exist' });
+    }
+    const gameId = uuidv4();
+    await pool.query(
+      'INSERT INTO games (game_id, grid_size, max_players, status) VALUES ($1, $2, $3, $4)',
+      [gameId, grid_size, max_players, 'waiting']
+    );
+    await pool.query(
+      'INSERT INTO game_players (game_id, player_id, turn_order) VALUES ($1, $2, 0)',
+      [gameId, creator_id]
+    );
+    res.status(201).json({
+      game_id: gameId,
+      grid_size,
+      status: 'waiting',
+      max_players: max_players,
+      current_turn_index: 0,
+    });
+  } catch (err) {
+    console.error('POST /api/games:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/games/:id/join
+app.post('/api/games/:id/join', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { player_id } = req.body || {};
+    if (!player_id) {
+      return res.status(400).json({ error: 'player_id is required' });
+    }
+    const gameResult = await pool.query(
+      'SELECT * FROM games WHERE game_id = $1',
+      [id]
+    );
+    if (gameResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Game not found' });
+    }
+    const game = gameResult.rows[0];
+    if (game.status !== 'waiting') {
+      return res.status(400).json({ error: 'Game is not in waiting status' });
+    }
+    const playerCheck = await pool.query(
+      'SELECT player_id FROM players WHERE player_id = $1',
+      [player_id]
+    );
+    if (playerCheck.rows.length === 0) {
+      return res.status(400).json({ error: 'Player does not exist' });
+    }
+    const existingJoin = await pool.query(
+      'SELECT 1 FROM game_players WHERE game_id = $1 AND player_id = $2',
+      [id, player_id]
+    );
+    if (existingJoin.rows.length > 0) {
+      return res.status(400).json({ error: 'Player already in this game' });
+    }
+    const countResult = await pool.query(
+      'SELECT COUNT(*)::int AS cnt FROM game_players WHERE game_id = $1',
+      [id]
+    );
+    const currentCount = countResult.rows[0].cnt;
+    if (currentCount >= game.max_players) {
+      return res.status(400).json({ error: 'Game is full' });
+    }
+    await pool.query(
+      'INSERT INTO game_players (game_id, player_id, turn_order) VALUES ($1, $2, $3)',
+      [id, player_id, currentCount]
+    );
+    const updated = await pool.query(
+      'SELECT * FROM games WHERE game_id = $1',
+      [id]
+    );
+    const g = updated.rows[0];
+    res.status(200).json({
+      game_id: g.game_id,
+      grid_size: g.grid_size,
+      status: g.status,
+      current_turn_index: g.current_turn_index,
+      max_players: g.max_players,
+    });
+  } catch (err) {
+    console.error('POST /api/games/:id/join:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/games/:id
+app.get('/api/games/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const gameResult = await pool.query(
+      'SELECT * FROM games WHERE game_id = $1',
+      [id]
+    );
+    if (gameResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Game not found' });
+    }
+    const game = gameResult.rows[0];
+    const activeResult = await pool.query(
+      'SELECT COUNT(*)::int AS cnt FROM game_players WHERE game_id = $1 AND is_eliminated = FALSE',
+      [id]
+    );
+    const activePlayers = activeResult.rows[0].cnt;
+    res.status(200).json({
+      game_id: game.game_id,
+      grid_size: game.grid_size,
+      status: game.status,
+      current_turn_index: game.current_turn_index,
+      active_players: activePlayers,
+    });
+  } catch (err) {
+    console.error('GET /api/games/:id:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/games/:id/place — Stub
+app.post('/api/games/:id/place', async (req, res) => {
+  try {
+    res.status(200).json({ message: 'placement not yet implemented' });
+  } catch (err) {
+    console.error('POST /api/games/:id/place:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/games/:id/fire — Stub
+app.post('/api/games/:id/fire', async (req, res) => {
+  try {
+    res.status(200).json({ message: 'fire not yet implemented' });
+  } catch (err) {
+    console.error('POST /api/games/:id/fire:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/games/:id/moves — Stub
+app.get('/api/games/:id/moves', async (req, res) => {
+  try {
+    res.status(200).json([]);
+  } catch (err) {
+    console.error('GET /api/games/:id/moves:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ========== Test Mode Endpoints ==========
+
+// POST /api/test/games/:id/restart
+app.post('/api/test/games/:id/restart', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const gameResult = await pool.query('SELECT * FROM games WHERE game_id = $1', [id]);
+    if (gameResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Game not found' });
+    }
+    await pool.query('DELETE FROM ships WHERE game_id = $1', [id]);
+    await pool.query('DELETE FROM moves WHERE game_id = $1', [id]);
+    await pool.query(
+      'UPDATE game_players SET is_eliminated = FALSE, ships_placed = FALSE WHERE game_id = $1',
+      [id]
+    );
+    await pool.query(
+      'UPDATE games SET current_turn_index = 0, status = $1 WHERE game_id = $2',
+      ['waiting', id]
+    );
+    const updated = await pool.query('SELECT * FROM games WHERE game_id = $1', [id]);
+    const g = updated.rows[0];
+    res.status(200).json({
+      game_id: g.game_id,
+      grid_size: g.grid_size,
+      status: g.status,
+      current_turn_index: g.current_turn_index,
+      max_players: g.max_players,
+    });
+  } catch (err) {
+    console.error('POST /api/test/games/:id/restart:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/test/games/:id/board/:player_id
+app.get('/api/test/games/:id/board/:player_id', async (req, res) => {
+  try {
+    const { id, player_id } = req.params;
+    const shipsResult = await pool.query(
+      'SELECT ship_row AS row, ship_col AS col FROM ships WHERE game_id = $1 AND player_id = $2',
+      [id, player_id]
+    );
+    const hitsResult = await pool.query(
+      'SELECT move_row AS row, move_col AS col FROM moves WHERE game_id = $1 AND target_player_id = $2 AND result = $3',
+      [id, player_id, 'hit']
+    );
+    res.status(200).json({
+      ships: shipsResult.rows,
+      hits: hitsResult.rows,
+    });
+  } catch (err) {
+    console.error('GET /api/test/games/:id/board/:player_id:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ========== Startup ==========
+
+async function start() {
+  if (!process.env.DATABASE_URL) {
+    console.error('DATABASE_URL environment variable is required');
+    process.exit(1);
+  }
+  await initDatabase();
+  app.listen(PORT, () => {
+    console.log(`Battleship API server listening on port ${PORT}`);
+    console.log(`TEST_MODE: ${TEST_MODE}`);
+  });
+}
+
+start().catch((err) => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
 });

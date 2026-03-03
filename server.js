@@ -18,6 +18,11 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isValidUuid(s) {
+  return typeof s === 'string' && UUID_REGEX.test(s);
+}
+
 async function initDatabase() {
   const client = await pool.connect();
   try {
@@ -140,6 +145,7 @@ app.post('/api/players', async (req, res) => {
 app.get('/api/players/:id/stats', async (req, res) => {
   try {
     const { id } = req.params;
+    if (!isValidUuid(id)) return res.status(404).json({ error: 'Player not found' });
     const playerResult = await pool.query(
       'SELECT total_games, total_wins, total_losses, total_moves FROM players WHERE player_id = $1',
       [id]
@@ -215,6 +221,7 @@ app.post('/api/games', async (req, res) => {
 app.post('/api/games/:id/join', async (req, res) => {
   try {
     const { id } = req.params;
+    if (!isValidUuid(id)) return res.status(404).json({ error: 'Game not found' });
     const { player_id } = req.body || {};
     if (!player_id) {
       return res.status(400).json({ error: 'player_id is required' });
@@ -278,6 +285,7 @@ app.post('/api/games/:id/join', async (req, res) => {
 app.get('/api/games/:id', async (req, res) => {
   try {
     const { id } = req.params;
+    if (!isValidUuid(id)) return res.status(404).json({ error: 'Game not found' });
     const gameResult = await pool.query(
       'SELECT * FROM games WHERE game_id = $1',
       [id]
@@ -307,6 +315,8 @@ app.get('/api/games/:id', async (req, res) => {
 // POST /api/games/:id/place — Stub
 app.post('/api/games/:id/place', async (req, res) => {
   try {
+    const { id } = req.params;
+    if (!isValidUuid(id)) return res.status(404).json({ error: 'Game not found' });
     res.status(200).json({ message: 'placement not yet implemented' });
   } catch (err) {
     console.error('POST /api/games/:id/place:', err);
@@ -317,6 +327,8 @@ app.post('/api/games/:id/place', async (req, res) => {
 // POST /api/games/:id/fire — Stub
 app.post('/api/games/:id/fire', async (req, res) => {
   try {
+    const { id } = req.params;
+    if (!isValidUuid(id)) return res.status(404).json({ error: 'Game not found' });
     res.status(200).json({ message: 'fire not yet implemented' });
   } catch (err) {
     console.error('POST /api/games/:id/fire:', err);
@@ -327,6 +339,8 @@ app.post('/api/games/:id/fire', async (req, res) => {
 // GET /api/games/:id/moves — Stub
 app.get('/api/games/:id/moves', async (req, res) => {
   try {
+    const { id } = req.params;
+    if (!isValidUuid(id)) return res.status(404).json({ error: 'Game not found' });
     res.status(200).json([]);
   } catch (err) {
     console.error('GET /api/games/:id/moves:', err);
@@ -340,6 +354,7 @@ app.get('/api/games/:id/moves', async (req, res) => {
 app.post('/api/test/games/:id/restart', async (req, res) => {
   try {
     const { id } = req.params;
+    if (!isValidUuid(id)) return res.status(404).json({ error: 'Game not found' });
     const gameResult = await pool.query('SELECT * FROM games WHERE game_id = $1', [id]);
     if (gameResult.rows.length === 0) {
       return res.status(404).json({ error: 'Game not found' });
@@ -373,6 +388,8 @@ app.post('/api/test/games/:id/restart', async (req, res) => {
 app.get('/api/test/games/:id/board/:player_id', async (req, res) => {
   try {
     const { id, player_id } = req.params;
+    if (!isValidUuid(id)) return res.status(404).json({ error: 'Game not found' });
+    if (!isValidUuid(player_id)) return res.status(404).json({ error: 'Player not found' });
     const shipsResult = await pool.query(
       'SELECT ship_row AS row, ship_col AS col FROM ships WHERE game_id = $1 AND player_id = $2',
       [id, player_id]

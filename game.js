@@ -5,8 +5,6 @@
 (function () {
   'use strict';
 
-  const CLIENT_ENABLED = false;
-
   const GRID_SIZE = 10;
   const SHIP_SPECS = [
     { name: '1×4', length: 4 },
@@ -367,7 +365,7 @@
       }
       syncUI(data);
     } catch (_) {
-      statusEl.textContent = 'PHASE 1 — API SERVER ACTIVE';
+      statusEl.textContent = 'Cannot reach server. Start server: npm start';
       restartGameBtn.style.display = 'none';
     }
   }
@@ -423,8 +421,6 @@
   resetScoreboardBtn.addEventListener('click', resetScoreboard);
 
   restartGameBtn.style.display = 'none';
-  if (CLIENT_ENABLED) {
-    loadGame();
-    fetchScoreboard();
-  }
+  loadGame();
+  fetchScoreboard();
 })();

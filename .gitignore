@@ -2,3 +2,4 @@ node_modules/
 .env
 game-state.json
 scoreboard.json
+test-checkpoint-a.js

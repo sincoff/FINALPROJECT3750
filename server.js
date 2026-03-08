@@ -27,7 +27,14 @@ async function initDatabase() {
   const client = await pool.connect();
   try {
     await client.query(`
-      CREATE TABLE IF NOT EXISTS players (
+      DROP TABLE IF EXISTS moves CASCADE;
+      DROP TABLE IF EXISTS ships CASCADE;
+      DROP TABLE IF EXISTS game_players CASCADE;
+      DROP TABLE IF EXISTS games CASCADE;
+      DROP TABLE IF EXISTS players CASCADE;
+    `);
+    await client.query(`
+      CREATE TABLE players (
         player_id SERIAL PRIMARY KEY,
         display_name TEXT UNIQUE NOT NULL,
         created_at TIMESTAMP DEFAULT NOW(),
@@ -37,7 +44,7 @@ async function initDatabase() {
         total_moves INTEGER DEFAULT 0
       );
 
-      CREATE TABLE IF NOT EXISTS games (
+      CREATE TABLE games (
         game_id SERIAL PRIMARY KEY,
         grid_size INTEGER NOT NULL,
         max_players INTEGER NOT NULL,
@@ -46,7 +53,7 @@ async function initDatabase() {
         created_at TIMESTAMP DEFAULT NOW()
       );
 
-      CREATE TABLE IF NOT EXISTS game_players (
+      CREATE TABLE game_players (
         game_id INTEGER REFERENCES games(game_id) ON DELETE CASCADE,
         player_id INTEGER REFERENCES players(player_id) ON DELETE CASCADE,
         turn_order INTEGER NOT NULL,
@@ -55,7 +62,7 @@ async function initDatabase() {
         PRIMARY KEY (game_id, player_id)
       );
 
-      CREATE TABLE IF NOT EXISTS ships (
+      CREATE TABLE ships (
         id SERIAL PRIMARY KEY,
         game_id INTEGER REFERENCES games(game_id) ON DELETE CASCADE,
         player_id INTEGER REFERENCES players(player_id) ON DELETE CASCADE,
@@ -63,7 +70,7 @@ async function initDatabase() {
         ship_col INTEGER NOT NULL
       );
 
-      CREATE TABLE IF NOT EXISTS moves (
+      CREATE TABLE moves (
         id SERIAL PRIMARY KEY,
         game_id INTEGER REFERENCES games(game_id) ON DELETE CASCADE,
         player_id INTEGER REFERENCES players(player_id) ON DELETE CASCADE,
@@ -127,13 +134,13 @@ app.post('/api/players', async (req, res) => {
       [displayName]
     );
     if (existing.rows.length > 0) {
-      return res.status(200).json({ player_id: existing.rows[0].player_id });
+      return res.status(200).json({ player_id: parseInt(existing.rows[0].player_id, 10) });
     }
     const result = await pool.query(
       'INSERT INTO players (display_name) VALUES ($1) RETURNING player_id',
       [displayName]
     );
-    const playerId = result.rows[0].player_id;
+    const playerId = parseInt(result.rows[0].player_id, 10);
     res.status(201).json({ player_id: playerId });
   } catch (err) {
     console.error('POST /api/players:', err);
@@ -204,16 +211,16 @@ app.post('/api/games', async (req, res) => {
       'INSERT INTO games (grid_size, max_players, status) VALUES ($1, $2, $3) RETURNING game_id',
       [grid_size, max_players, 'waiting']
     );
-    const gameId = gameResult.rows[0].game_id;
+    const gameId = parseInt(gameResult.rows[0].game_id, 10);
     await pool.query(
       'INSERT INTO game_players (game_id, player_id, turn_order) VALUES ($1, $2, 0)',
       [gameId, cid]
     );
     res.status(201).json({
       game_id: gameId,
-      grid_size,
+      grid_size: parseInt(grid_size, 10),
       status: 'waiting',
-      max_players: max_players,
+      max_players: parseInt(max_players, 10),
       current_turn_index: 0,
     });
   } catch (err) {
@@ -279,7 +286,7 @@ app.post('/api/games/:id/join', async (req, res) => {
     );
     const g = updated.rows[0];
     res.status(200).json({
-      game_id: g.game_id,
+      game_id: parseInt(g.game_id, 10),
       grid_size: g.grid_size,
       status: g.status,
       current_turn_index: g.current_turn_index,
@@ -311,7 +318,7 @@ app.get('/api/games/:id', async (req, res) => {
     );
     const activePlayers = activeResult.rows[0].cnt;
     res.status(200).json({
-      game_id: game.game_id,
+      game_id: parseInt(game.game_id, 10),
       grid_size: game.grid_size,
       status: game.status,
       current_turn_index: game.current_turn_index,
@@ -428,7 +435,7 @@ app.post('/api/games/:id/place', async (req, res) => {
       [gameId]
     );
     res.status(200).json({
-      game_id: g.game_id,
+      game_id: parseInt(g.game_id, 10),
       grid_size: g.grid_size,
       status: g.status,
       current_turn_index: g.current_turn_index,
@@ -489,7 +496,7 @@ app.post('/api/test/games/:id/restart', async (req, res) => {
     const updated = await pool.query('SELECT * FROM games WHERE game_id = $1', [gameId]);
     const g = updated.rows[0];
     res.status(200).json({
-      game_id: g.game_id,
+      game_id: parseInt(g.game_id, 10),
       grid_size: g.grid_size,
       status: g.status,
       current_turn_index: g.current_turn_index,

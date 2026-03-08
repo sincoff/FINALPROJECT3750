@@ -2,12 +2,12 @@ require('dotenv').config();
 
 /**
  * Multiplayer Battleship API Server
- * Tech stack: Express.js, pg (PostgreSQL), uuid
+ * Tech stack: Express.js, pg (PostgreSQL)
+ * player_id and game_id are integers (SERIAL)
  */
 
 const express = require('express');
 const { Pool } = require('pg');
-const { v4: uuidv4 } = require('uuid');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -18,9 +18,9 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-function isValidUuid(s) {
-  return typeof s === 'string' && UUID_REGEX.test(s);
+function isValidId(s) {
+  const n = parseInt(s, 10);
+  return !isNaN(n) && n >= 1;
 }
 
 async function initDatabase() {
@@ -28,7 +28,7 @@ async function initDatabase() {
   try {
     await client.query(`
       CREATE TABLE IF NOT EXISTS players (
-        player_id UUID PRIMARY KEY,
+        player_id SERIAL PRIMARY KEY,
         display_name TEXT UNIQUE NOT NULL,
         created_at TIMESTAMP DEFAULT NOW(),
         total_games INTEGER DEFAULT 0,
@@ -38,7 +38,7 @@ async function initDatabase() {
       );
 
       CREATE TABLE IF NOT EXISTS games (
-        game_id UUID PRIMARY KEY,
+        game_id SERIAL PRIMARY KEY,
         grid_size INTEGER NOT NULL,
         max_players INTEGER NOT NULL,
         status TEXT DEFAULT 'waiting',
@@ -47,8 +47,8 @@ async function initDatabase() {
       );
 
       CREATE TABLE IF NOT EXISTS game_players (
-        game_id UUID REFERENCES games(game_id) ON DELETE CASCADE,
-        player_id UUID REFERENCES players(player_id) ON DELETE CASCADE,
+        game_id INTEGER REFERENCES games(game_id) ON DELETE CASCADE,
+        player_id INTEGER REFERENCES players(player_id) ON DELETE CASCADE,
         turn_order INTEGER NOT NULL,
         is_eliminated BOOLEAN DEFAULT FALSE,
         ships_placed BOOLEAN DEFAULT FALSE,
@@ -57,17 +57,17 @@ async function initDatabase() {
 
       CREATE TABLE IF NOT EXISTS ships (
         id SERIAL PRIMARY KEY,
-        game_id UUID REFERENCES games(game_id) ON DELETE CASCADE,
-        player_id UUID REFERENCES players(player_id) ON DELETE CASCADE,
+        game_id INTEGER REFERENCES games(game_id) ON DELETE CASCADE,
+        player_id INTEGER REFERENCES players(player_id) ON DELETE CASCADE,
         ship_row INTEGER NOT NULL,
         ship_col INTEGER NOT NULL
       );
 
       CREATE TABLE IF NOT EXISTS moves (
         id SERIAL PRIMARY KEY,
-        game_id UUID REFERENCES games(game_id) ON DELETE CASCADE,
-        player_id UUID REFERENCES players(player_id) ON DELETE CASCADE,
-        target_player_id UUID REFERENCES players(player_id) ON DELETE CASCADE,
+        game_id INTEGER REFERENCES games(game_id) ON DELETE CASCADE,
+        player_id INTEGER REFERENCES players(player_id) ON DELETE CASCADE,
+        target_player_id INTEGER REFERENCES players(player_id) ON DELETE CASCADE,
         move_row INTEGER NOT NULL,
         move_col INTEGER NOT NULL,
         result TEXT NOT NULL,
@@ -83,7 +83,7 @@ async function initDatabase() {
 // Middleware
 app.use(express.json());
 
-// Test mode middleware: only allow /api/test/* when TEST_MODE=true and X-Test-Password is correct
+// Test mode middleware
 app.use('/api/test', (req, res, next) => {
   if (TEST_MODE !== 'true') {
     return res.status(403).json({ error: 'Test mode disabled' });
@@ -129,11 +129,11 @@ app.post('/api/players', async (req, res) => {
     if (existing.rows.length > 0) {
       return res.status(200).json({ player_id: existing.rows[0].player_id });
     }
-    const playerId = uuidv4();
-    await pool.query(
-      'INSERT INTO players (player_id, display_name) VALUES ($1, $2)',
-      [playerId, displayName]
+    const result = await pool.query(
+      'INSERT INTO players (display_name) VALUES ($1) RETURNING player_id',
+      [displayName]
     );
+    const playerId = result.rows[0].player_id;
     res.status(201).json({ player_id: playerId });
   } catch (err) {
     console.error('POST /api/players:', err);
@@ -145,10 +145,11 @@ app.post('/api/players', async (req, res) => {
 app.get('/api/players/:id/stats', async (req, res) => {
   try {
     const { id } = req.params;
-    if (!isValidUuid(id)) return res.status(404).json({ error: 'Player not found' });
+    if (!isValidId(id)) return res.status(404).json({ error: 'Player not found' });
+    const pid = parseInt(id, 10);
     const playerResult = await pool.query(
       'SELECT total_games, total_wins, total_losses, total_moves FROM players WHERE player_id = $1',
-      [id]
+      [pid]
     );
     if (playerResult.rows.length === 0) {
       return res.status(404).json({ error: 'Player not found' });
@@ -156,7 +157,7 @@ app.get('/api/players/:id/stats', async (req, res) => {
     const row = playerResult.rows[0];
     const hitsResult = await pool.query(
       "SELECT COUNT(*)::int AS total_hits FROM moves WHERE player_id = $1 AND result = 'hit'",
-      [id]
+      [pid]
     );
     const totalHits = hitsResult.rows[0].total_hits || 0;
     const totalShots = row.total_moves || 0;
@@ -185,24 +186,28 @@ app.post('/api/games', async (req, res) => {
     if (max_players == null || max_players < 1) {
       return res.status(400).json({ error: 'max_players must be >= 1' });
     }
-    if (!creator_id) {
+    if (creator_id == null) {
       return res.status(400).json({ error: 'creator_id is required' });
+    }
+    const cid = typeof creator_id === 'number' ? creator_id : parseInt(creator_id, 10);
+    if (isNaN(cid) || cid < 1) {
+      return res.status(400).json({ error: 'creator_id does not exist' });
     }
     const creatorCheck = await pool.query(
       'SELECT player_id FROM players WHERE player_id = $1',
-      [creator_id]
+      [cid]
     );
     if (creatorCheck.rows.length === 0) {
       return res.status(400).json({ error: 'creator_id does not exist' });
     }
-    const gameId = uuidv4();
-    await pool.query(
-      'INSERT INTO games (game_id, grid_size, max_players, status) VALUES ($1, $2, $3, $4)',
-      [gameId, grid_size, max_players, 'waiting']
+    const gameResult = await pool.query(
+      'INSERT INTO games (grid_size, max_players, status) VALUES ($1, $2, $3) RETURNING game_id',
+      [grid_size, max_players, 'waiting']
     );
+    const gameId = gameResult.rows[0].game_id;
     await pool.query(
       'INSERT INTO game_players (game_id, player_id, turn_order) VALUES ($1, $2, 0)',
-      [gameId, creator_id]
+      [gameId, cid]
     );
     res.status(201).json({
       game_id: gameId,
@@ -221,14 +226,19 @@ app.post('/api/games', async (req, res) => {
 app.post('/api/games/:id/join', async (req, res) => {
   try {
     const { id } = req.params;
-    if (!isValidUuid(id)) return res.status(404).json({ error: 'Game not found' });
+    if (!isValidId(id)) return res.status(404).json({ error: 'Game not found' });
+    const gameId = parseInt(id, 10);
     const { player_id } = req.body || {};
-    if (!player_id) {
+    if (player_id == null) {
       return res.status(400).json({ error: 'player_id is required' });
+    }
+    const pid = typeof player_id === 'number' ? player_id : parseInt(player_id, 10);
+    if (isNaN(pid) || pid < 1) {
+      return res.status(400).json({ error: 'Player does not exist' });
     }
     const gameResult = await pool.query(
       'SELECT * FROM games WHERE game_id = $1',
-      [id]
+      [gameId]
     );
     if (gameResult.rows.length === 0) {
       return res.status(404).json({ error: 'Game not found' });
@@ -239,21 +249,21 @@ app.post('/api/games/:id/join', async (req, res) => {
     }
     const playerCheck = await pool.query(
       'SELECT player_id FROM players WHERE player_id = $1',
-      [player_id]
+      [pid]
     );
     if (playerCheck.rows.length === 0) {
       return res.status(400).json({ error: 'Player does not exist' });
     }
     const existingJoin = await pool.query(
       'SELECT 1 FROM game_players WHERE game_id = $1 AND player_id = $2',
-      [id, player_id]
+      [gameId, pid]
     );
     if (existingJoin.rows.length > 0) {
       return res.status(400).json({ error: 'Player already in this game' });
     }
     const countResult = await pool.query(
       'SELECT COUNT(*)::int AS cnt FROM game_players WHERE game_id = $1',
-      [id]
+      [gameId]
     );
     const currentCount = countResult.rows[0].cnt;
     if (currentCount >= game.max_players) {
@@ -261,11 +271,11 @@ app.post('/api/games/:id/join', async (req, res) => {
     }
     await pool.query(
       'INSERT INTO game_players (game_id, player_id, turn_order) VALUES ($1, $2, $3)',
-      [id, player_id, currentCount]
+      [gameId, pid, currentCount]
     );
     const updated = await pool.query(
       'SELECT * FROM games WHERE game_id = $1',
-      [id]
+      [gameId]
     );
     const g = updated.rows[0];
     res.status(200).json({
@@ -285,10 +295,11 @@ app.post('/api/games/:id/join', async (req, res) => {
 app.get('/api/games/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    if (!isValidUuid(id)) return res.status(404).json({ error: 'Game not found' });
+    if (!isValidId(id)) return res.status(404).json({ error: 'Game not found' });
+    const gameId = parseInt(id, 10);
     const gameResult = await pool.query(
       'SELECT * FROM games WHERE game_id = $1',
-      [id]
+      [gameId]
     );
     if (gameResult.rows.length === 0) {
       return res.status(404).json({ error: 'Game not found' });
@@ -296,7 +307,7 @@ app.get('/api/games/:id', async (req, res) => {
     const game = gameResult.rows[0];
     const activeResult = await pool.query(
       'SELECT COUNT(*)::int AS cnt FROM game_players WHERE game_id = $1 AND is_eliminated = FALSE',
-      [id]
+      [gameId]
     );
     const activePlayers = activeResult.rows[0].cnt;
     res.status(200).json({
@@ -312,12 +323,117 @@ app.get('/api/games/:id', async (req, res) => {
   }
 });
 
-// POST /api/games/:id/place — Stub
+// POST /api/games/:id/place — full implementation
 app.post('/api/games/:id/place', async (req, res) => {
   try {
     const { id } = req.params;
-    if (!isValidUuid(id)) return res.status(404).json({ error: 'Game not found' });
-    res.status(200).json({ message: 'placement not yet implemented' });
+    if (!isValidId(id)) return res.status(404).json({ error: 'Game not found' });
+    const gameId = parseInt(id, 10);
+    const { player_id, ships } = req.body || {};
+
+    if (player_id == null) {
+      return res.status(400).json({ error: 'player_id is required' });
+    }
+    const pid = typeof player_id === 'number' ? player_id : parseInt(player_id, 10);
+    if (isNaN(pid) || pid < 1) {
+      return res.status(400).json({ error: 'Invalid player_id' });
+    }
+
+    if (!Array.isArray(ships)) {
+      return res.status(400).json({ error: 'ships must be an array' });
+    }
+    if (ships.length !== 3) {
+      return res.status(400).json({ error: 'Exactly 3 ships required' });
+    }
+
+    const gameResult = await pool.query(
+      'SELECT * FROM games WHERE game_id = $1',
+      [gameId]
+    );
+    if (gameResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Game not found' });
+    }
+    const game = gameResult.rows[0];
+    if (game.status !== 'waiting') {
+      return res.status(400).json({ error: 'Game is not in waiting status' });
+    }
+
+    const gpResult = await pool.query(
+      'SELECT ships_placed FROM game_players WHERE game_id = $1 AND player_id = $2',
+      [gameId, pid]
+    );
+    if (gpResult.rows.length === 0) {
+      return res.status(400).json({ error: 'Player is not in this game' });
+    }
+    if (gpResult.rows[0].ships_placed) {
+      return res.status(400).json({ error: 'Player has already placed ships' });
+    }
+
+    const gridSize = game.grid_size;
+    const coordSet = new Set();
+    const coords = [];
+
+    for (const s of ships) {
+      if (typeof s !== 'object' || s == null) {
+        return res.status(400).json({ error: 'Each ship must have row and col' });
+      }
+      const r = parseInt(s.row, 10);
+      const c = parseInt(s.col, 10);
+      if (isNaN(r) || isNaN(c)) {
+        return res.status(400).json({ error: 'Each ship must have numeric row and col' });
+      }
+      if (r < 0 || r >= gridSize || c < 0 || c >= gridSize) {
+        return res.status(400).json({ error: 'Ship coordinates must be within grid bounds' });
+      }
+      const key = `${r},${c}`;
+      if (coordSet.has(key)) {
+        return res.status(400).json({ error: 'Duplicate ship coordinates' });
+      }
+      coordSet.add(key);
+      coords.push({ row: r, col: c });
+    }
+
+    for (const { row: r, col: c } of coords) {
+      await pool.query(
+        'INSERT INTO ships (game_id, player_id, ship_row, ship_col) VALUES ($1, $2, $3, $4)',
+        [gameId, pid, r, c]
+      );
+    }
+
+    await pool.query(
+      'UPDATE game_players SET ships_placed = TRUE WHERE game_id = $1 AND player_id = $2',
+      [gameId, pid]
+    );
+
+    const allPlacedResult = await pool.query(
+      'SELECT COUNT(*)::int AS total, SUM(CASE WHEN ships_placed THEN 1 ELSE 0 END)::int AS placed FROM game_players WHERE game_id = $1',
+      [gameId]
+    );
+    const total = allPlacedResult.rows[0].total;
+    const placed = allPlacedResult.rows[0].placed;
+    if (placed === total) {
+      await pool.query(
+        'UPDATE games SET status = $1 WHERE game_id = $2',
+        ['active', gameId]
+      );
+    }
+
+    const updatedGame = await pool.query(
+      'SELECT * FROM games WHERE game_id = $1',
+      [gameId]
+    );
+    const g = updatedGame.rows[0];
+    const activeResult = await pool.query(
+      'SELECT COUNT(*)::int AS cnt FROM game_players WHERE game_id = $1 AND is_eliminated = FALSE',
+      [gameId]
+    );
+    res.status(200).json({
+      game_id: g.game_id,
+      grid_size: g.grid_size,
+      status: g.status,
+      current_turn_index: g.current_turn_index,
+      active_players: activeResult.rows[0].cnt,
+    });
   } catch (err) {
     console.error('POST /api/games/:id/place:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -328,7 +444,7 @@ app.post('/api/games/:id/place', async (req, res) => {
 app.post('/api/games/:id/fire', async (req, res) => {
   try {
     const { id } = req.params;
-    if (!isValidUuid(id)) return res.status(404).json({ error: 'Game not found' });
+    if (!isValidId(id)) return res.status(404).json({ error: 'Game not found' });
     res.status(200).json({ message: 'fire not yet implemented' });
   } catch (err) {
     console.error('POST /api/games/:id/fire:', err);
@@ -340,7 +456,7 @@ app.post('/api/games/:id/fire', async (req, res) => {
 app.get('/api/games/:id/moves', async (req, res) => {
   try {
     const { id } = req.params;
-    if (!isValidUuid(id)) return res.status(404).json({ error: 'Game not found' });
+    if (!isValidId(id)) return res.status(404).json({ error: 'Game not found' });
     res.status(200).json([]);
   } catch (err) {
     console.error('GET /api/games/:id/moves:', err);
@@ -354,22 +470,23 @@ app.get('/api/games/:id/moves', async (req, res) => {
 app.post('/api/test/games/:id/restart', async (req, res) => {
   try {
     const { id } = req.params;
-    if (!isValidUuid(id)) return res.status(404).json({ error: 'Game not found' });
-    const gameResult = await pool.query('SELECT * FROM games WHERE game_id = $1', [id]);
+    if (!isValidId(id)) return res.status(404).json({ error: 'Game not found' });
+    const gameId = parseInt(id, 10);
+    const gameResult = await pool.query('SELECT * FROM games WHERE game_id = $1', [gameId]);
     if (gameResult.rows.length === 0) {
       return res.status(404).json({ error: 'Game not found' });
     }
-    await pool.query('DELETE FROM ships WHERE game_id = $1', [id]);
-    await pool.query('DELETE FROM moves WHERE game_id = $1', [id]);
+    await pool.query('DELETE FROM ships WHERE game_id = $1', [gameId]);
+    await pool.query('DELETE FROM moves WHERE game_id = $1', [gameId]);
     await pool.query(
       'UPDATE game_players SET is_eliminated = FALSE, ships_placed = FALSE WHERE game_id = $1',
-      [id]
+      [gameId]
     );
     await pool.query(
       'UPDATE games SET current_turn_index = 0, status = $1 WHERE game_id = $2',
-      ['waiting', id]
+      ['waiting', gameId]
     );
-    const updated = await pool.query('SELECT * FROM games WHERE game_id = $1', [id]);
+    const updated = await pool.query('SELECT * FROM games WHERE game_id = $1', [gameId]);
     const g = updated.rows[0];
     res.status(200).json({
       game_id: g.game_id,
@@ -388,15 +505,17 @@ app.post('/api/test/games/:id/restart', async (req, res) => {
 app.get('/api/test/games/:id/board/:player_id', async (req, res) => {
   try {
     const { id, player_id } = req.params;
-    if (!isValidUuid(id)) return res.status(404).json({ error: 'Game not found' });
-    if (!isValidUuid(player_id)) return res.status(404).json({ error: 'Player not found' });
+    if (!isValidId(id)) return res.status(404).json({ error: 'Game not found' });
+    if (!isValidId(player_id)) return res.status(404).json({ error: 'Player not found' });
+    const gameId = parseInt(id, 10);
+    const pid = parseInt(player_id, 10);
     const shipsResult = await pool.query(
       'SELECT ship_row AS row, ship_col AS col FROM ships WHERE game_id = $1 AND player_id = $2',
-      [id, player_id]
+      [gameId, pid]
     );
     const hitsResult = await pool.query(
       'SELECT move_row AS row, move_col AS col FROM moves WHERE game_id = $1 AND target_player_id = $2 AND result = $3',
-      [id, player_id, 'hit']
+      [gameId, pid, 'hit']
     );
     res.status(200).json({
       ships: shipsResult.rows,

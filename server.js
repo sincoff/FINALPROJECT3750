@@ -381,11 +381,16 @@ app.post('/api/games/:id/place', async (req, res) => {
     const coords = [];
 
     for (const s of ships) {
-      if (typeof s !== 'object' || s == null) {
+      let r, c;
+      if (Array.isArray(s) && s.length >= 2) {
+        r = parseInt(s[0], 10);
+        c = parseInt(s[1], 10);
+      } else if (typeof s === 'object' && s != null) {
+        r = parseInt(s.row ?? s.ship_row, 10);
+        c = parseInt(s.col ?? s.ship_col, 10);
+      } else {
         return res.status(400).json({ error: 'Each ship must have row and col' });
       }
-      const r = parseInt(s.row, 10);
-      const c = parseInt(s.col, 10);
       if (isNaN(r) || isNaN(c)) {
         return res.status(400).json({ error: 'Each ship must have numeric row and col' });
       }
@@ -435,10 +440,11 @@ app.post('/api/games/:id/place', async (req, res) => {
       [gameId]
     );
     res.status(200).json({
+      message: 'ships placed',
       game_id: parseInt(g.game_id, 10),
-      grid_size: g.grid_size,
+      grid_size: parseInt(g.grid_size, 10),
       status: g.status,
-      current_turn_index: g.current_turn_index,
+      current_turn_index: parseInt(g.current_turn_index, 10),
       active_players: activeResult.rows[0].cnt,
     });
   } catch (err) {

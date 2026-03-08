@@ -418,12 +418,12 @@ app.post('/api/games/:id/place', async (req, res) => {
     );
 
     const allPlacedResult = await pool.query(
-      'SELECT COUNT(*)::int AS total, SUM(CASE WHEN ships_placed THEN 1 ELSE 0 END)::int AS placed FROM game_players WHERE game_id = $1',
+      'SELECT COUNT(*)::int AS total, COALESCE(SUM(CASE WHEN ships_placed THEN 1 ELSE 0 END)::int, 0) AS placed FROM game_players WHERE game_id = $1',
       [gameId]
     );
-    const total = allPlacedResult.rows[0].total;
-    const placed = allPlacedResult.rows[0].placed;
-    if (placed === total) {
+    const total = allPlacedResult.rows[0].total || 0;
+    const placed = allPlacedResult.rows[0].placed ?? 0;
+    if (total > 0 && placed === total) {
       await pool.query(
         'UPDATE games SET status = $1 WHERE game_id = $2',
         ['active', gameId]
@@ -446,6 +446,7 @@ app.post('/api/games/:id/place', async (req, res) => {
       status: g.status,
       current_turn_index: parseInt(g.current_turn_index, 10),
       active_players: activeResult.rows[0].cnt,
+      ships: coords,
     });
   } catch (err) {
     console.error('POST /api/games/:id/place:', err);

@@ -3,3 +3,4 @@ node_modules/
 game-state.json
 scoreboard.json
 test-checkpoint-a.js
+test-place-debug.js

@@ -110,7 +110,7 @@ app.use(express.static('.'));
 // POST /api/reset
 app.post('/api/reset', async (req, res) => {
   try {
-    await pool.query('TRUNCATE players, games, game_players, ships, moves CASCADE');
+    await pool.query('TRUNCATE players, games, game_players, ships, moves RESTART IDENTITY CASCADE');
     res.status(200).json({ status: 'reset' });
   } catch (err) {
     console.error('POST /api/reset:', err);
@@ -441,12 +441,12 @@ app.post('/api/games/:id/place', async (req, res) => {
     );
     res.status(200).json({
       message: 'ships placed',
+      player_id: pid,
       game_id: parseInt(g.game_id, 10),
       grid_size: parseInt(g.grid_size, 10),
       status: g.status,
       current_turn_index: parseInt(g.current_turn_index, 10),
       active_players: activeResult.rows[0].cnt,
-      ships: coords,
     });
   } catch (err) {
     console.error('POST /api/games/:id/place:', err);

@@ -81,6 +81,21 @@ Tables:
 The pg pool uses ssl: { rejectUnauthorized: false } for NeonDB compatibility.
 
 ================================================================================
+ARCHITECTURE SUMMARY
+================================================================================
+
+- Frontend: Single-page HTML/CSS/JS (index.html, game.js, styles.css) served
+  statically by Express. The browser calls the REST API for all game state.
+
+- Backend: Express.js + PostgreSQL API in server.js. All state (players, games,
+  participation, ships, moves) lives in the database; the server is stateless
+  between requests aside from the DB.
+
+- Identity: Players and games use UUID primary keys. Identity is persistent
+  across games, and POST /api/players reuses the same player_id for the same
+  display_name.
+
+================================================================================
 API ENDPOINTS
 ================================================================================
 
@@ -114,7 +129,11 @@ PRODUCTION ENDPOINTS
          active_players. 404 if not found or invalid UUID.
 
   POST   /api/games/:id/place
-         (Stub) Returns 200 { "message": "placement not yet implemented" }
+         Body: { "player_id": "<uuid>", "ships": [...] } (3 ships, in-bounds, no
+         overlaps). Validates game is waiting, player is in game, and ship
+         coordinates are valid. Inserts ships and marks ships_placed=TRUE for
+         that player. Returns 200 with basic game info; does not advance game
+         state in Phase 1.
 
   POST   /api/games/:id/fire
          (Stub) Returns 200 { "message": "fire not yet implemented" }
@@ -148,7 +167,7 @@ FILE STRUCTURE
   .env                 — Environment variables (create from template, in .gitignore)
   .gitignore           — Ignores node_modules, .env, game-state.json, scoreboard.json
   test-checkpoint-a.js — Automated Checkpoint A API tests
-  README.txt           — This file
+  README.md            — This file
 
 ================================================================================
 RUNNING TESTS
@@ -183,7 +202,35 @@ IP range and that SSL is configured (the server uses rejectUnauthorized: false
 for NeonDB compatibility).
 
 ================================================================================
-HUMAN OVERSIGHT
+TEAM
 ================================================================================
-- Anthony Martino & Ian Sincoff reviewed all AI suggestions, corrected any 
-mistakes, and made the final architecture and implementation decisions. 
+
+- Anthony Martino
+  Role: Co-Engineer (shared responsibilities).
+  Responsibilities: Designing the persistent multiplayer system and identity
+  model, modeling the relational schema (players, games, game_players, ships,
+  moves), and implementing/validating the REST API to satisfy Checkpoint A.
+
+- Ian Sincoff
+  Role: Co-Engineer (shared responsibilities).
+  Responsibilities: Front-end UI and UX work for the Battleship client,
+  integrating the browser game with the API, deployment configuration, and
+  additional testing/verification.
+
+================================================================================
+AI TOOLS AND HUMAN OVERSIGHT
+================================================================================
+
+AI tools used:
+- Cursor AI assistant (GPT-based)
+- Claude (for early architecture and prompt design help)
+
+Major roles:
+- AI: Helped reason about the Phase 1 spec, hidden edge cases for Checkpoint A,
+  and database schema design (5-table model). Assisted in drafting and refining
+  server.js endpoints, UUID-based identity handling, and the automated
+  test-checkpoint-a.js script.
+- Humans (Anthony & Ian): Reviewed all AI suggestions, caught and corrected
+  mistakes (e.g., PORT handling, integer vs UUID ids, deployment details),
+  made final architecture decisions, and implemented, tested, and debugged
+  the codebase.

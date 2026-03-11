@@ -183,3 +183,7 @@ IP range and that SSL is configured (the server uses rejectUnauthorized: false
 for NeonDB compatibility).
 
 ================================================================================
+HUMAN OVERSIGHT
+================================================================================
+- Anthony Martino & Ian Sincoff reviewed all AI suggestions, corrected any 
+mistakes, and made the final architecture and implementation decisions. 

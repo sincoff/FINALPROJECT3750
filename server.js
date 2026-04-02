@@ -407,6 +407,47 @@ app.get('/api/games/:id', async (req, res) => {
   }
 });
 
+// GET /api/games/:id/players
+app.get('/api/games/:id/players', async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!isValidId(id)) return res.status(404).json({ error: 'Game not found' });
+    const gameId = parseInt(id, 10);
+
+    const gameExists = await pool.query('SELECT 1 FROM games WHERE game_id = $1', [gameId]);
+    if (gameExists.rows.length === 0) {
+      return res.status(404).json({ error: 'Game not found' });
+    }
+
+    const result = await pool.query(
+      `SELECT
+         gp.player_id,
+         p.display_name AS username,
+         gp.turn_order,
+         gp.is_eliminated,
+         gp.ships_placed
+       FROM game_players gp
+       JOIN players p ON p.player_id = gp.player_id
+       WHERE gp.game_id = $1
+       ORDER BY gp.turn_order ASC`,
+      [gameId]
+    );
+
+    res.status(200).json(
+      result.rows.map((r) => ({
+        player_id: parseInt(r.player_id, 10),
+        username: r.username,
+        turn_order: parseInt(r.turn_order, 10),
+        is_eliminated: !!r.is_eliminated,
+        ships_placed: !!r.ships_placed,
+      }))
+    );
+  } catch (err) {
+    console.error('GET /api/games/:id/players:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // POST /api/games/:id/place — full implementation
 app.post('/api/games/:id/place', async (req, res) => {
   try {

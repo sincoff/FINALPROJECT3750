@@ -160,20 +160,6 @@
     for (const p of players) state.playersById[p.id] = p.username;
   }
 
-  function loadParticipantsByProbing() {
-    const allIds = Object.keys(state.playersById).map((id) => parseInt(id, 10));
-    return Promise.all(allIds.map(async (pid) => {
-      try {
-        await apiService.get(`/api/games/${state.currentGameId}/ships?player_id=${pid}&requester_id=${state.playerId}`);
-        return pid;
-      } catch (err) {
-        // 403 means player is in-game but their ships are hidden from this requester.
-        if (err && err.status === 403) return pid;
-        return null;
-      }
-    })).then((ids) => ids.filter((x) => x != null));
-  }
-
   function getMoveCellsForPlayer(playerId) {
     const hits = new Set();
     const misses = new Set();
@@ -273,8 +259,8 @@
       if (m.player_id !== state.playerId && m.result === 'miss') incomingMisses.add(key(m.row, m.col));
     }
 
-    const activePlayers = await loadParticipantsByProbing();
-    state.participants = activePlayers.length ? activePlayers : [state.playerId];
+    const gamePlayers = await apiService.get(`/api/games/${state.currentGameId}/players`);
+    state.participants = gamePlayers.map((p) => p.player_id);
     if (!state.participants.includes(state.playerId)) state.participants.push(state.playerId);
     const meIdx = state.participants.indexOf(state.playerId);
     const expectedId = state.participants[(game.current_turn_index % state.participants.length + state.participants.length) % state.participants.length];

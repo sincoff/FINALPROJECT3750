@@ -246,6 +246,11 @@
 
     const myShipsData = await apiService.get(`/api/games/${state.currentGameId}/ships?player_id=${state.playerId}&requester_id=${state.playerId}`);
     const myShipSet = new Set((myShipsData.ships || []).map((s) => key(s.row, s.col)));
+    if (myShipSet.size === 0 && game.status === 'waiting' && state.localShips.length > 0) {
+      for (const ship of state.localShips) {
+        for (const cell of ship) myShipSet.add(key(cell.row, cell.col));
+      }
+    }
     const incomingHits = getIncomingHitsOnMe();
     const incomingMisses = new Set();
 

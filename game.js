@@ -247,8 +247,10 @@
     state.gridSize = game.grid_size;
 
     const myShipsData = await apiService.get(`/api/games/${state.currentGameId}/ships?player_id=${state.playerId}&requester_id=${state.playerId}`);
-    const myShipSet = new Set((myShipsData.ships || []).map((s) => key(s.row, s.col)));
-    if (myShipSet.size === 0 && game.status === 'waiting' && state.localShips.length > 0) {
+    const serverShips = myShipsData.ships || [];
+    const serverPlaced = serverShips.length > 0;
+    const myShipSet = new Set(serverShips.map((s) => key(s.row, s.col)));
+    if (!serverPlaced && game.status === 'waiting' && state.localShips.length > 0) {
       for (const ship of state.localShips) {
         for (const cell of ship) myShipSet.add(key(cell.row, cell.col));
       }
@@ -270,9 +272,10 @@
     ui.turnIndicator.textContent = game.status === 'finished'
       ? 'Game finished'
       : isMyTurn ? 'Your turn' : `Waiting for ${state.playersById[expectedId] || `Player ${expectedId}`}`;
-    ui.placementControls.classList.toggle('hidden', myShipSet.size > 0 || game.status !== 'waiting');
+    const canPlaceShips = game.status === 'waiting' && !serverPlaced && state.localShips.length < SHIP_SPECS.length;
+    ui.placementControls.classList.toggle('hidden', game.status !== 'waiting' || serverPlaced);
 
-    paintGrid(ui.yourGrid, state.gridSize, myShipSet, incomingHits, incomingMisses, game.status === 'waiting' && myShipSet.size === 0, onPlaceCellClick);
+    paintGrid(ui.yourGrid, state.gridSize, myShipSet, incomingHits, incomingMisses, canPlaceShips, onPlaceCellClick);
 
     ui.opponentGrids.innerHTML = '';
     for (const pid of state.participants) {

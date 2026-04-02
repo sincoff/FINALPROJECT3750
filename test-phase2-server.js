@@ -99,7 +99,7 @@ async function main() {
   console.log('PASS: GET /api/games player_count updated to 2');
 
   // 10) POST /api/games/:id/ships alice
-  const aliceShips = [[0, 0], [0, 1], [0, 2]];
+  const aliceShips = [[0, 0], [0, 1], [0, 2], [0, 3], [2, 0], [2, 1], [2, 2], [4, 0], [4, 1]];
   r = await post(`/api/games/${gameId}/ships`, { player_id: aliceId, ships: aliceShips });
   assert(r.status === 200 || r.status === 201, `POST /api/games/:id/ships alice expected 200/201, got ${r.status}`);
   console.log('PASS: POST /api/games/:id/ships alice');
@@ -108,11 +108,11 @@ async function main() {
   r = await get(`/api/games/${gameId}/ships?player_id=${aliceId}`);
   assert(r.status === 200, `GET /api/games/:id/ships for alice expected 200, got ${r.status}`);
   assert(r.data && Array.isArray(r.data.ships), 'GET /api/games/:id/ships expected ships array');
-  assert(r.data.ships.length >= 3, `expected at least 3 ships for alice, got ${r.data.ships.length}`);
+  assert(r.data.ships.length >= 9, `expected at least 9 ship cells for alice, got ${r.data.ships.length}`);
   console.log('PASS: GET /api/games/:id/ships returns alice ships');
 
   // 12) POST /api/games/:id/ships bob
-  const bobShips = [[1, 0], [1, 1], [1, 2]];
+  const bobShips = [[1, 0], [1, 1], [1, 2], [1, 3], [3, 0], [3, 1], [3, 2], [5, 0], [5, 1]];
   r = await post(`/api/games/${gameId}/ships`, { player_id: bobId, ships: bobShips });
   assert(r.status === 200 || r.status === 201, `POST /api/games/:id/ships bob expected 200/201, got ${r.status}`);
   console.log('PASS: POST /api/games/:id/ships bob');

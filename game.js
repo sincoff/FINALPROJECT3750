@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const SHIP_SPECS = [1, 1, 1];
+  const SHIP_SPECS = [4, 3, 2];
   const STORAGE_KEYS = {
     baseUrl: 'battleship.baseUrl',
     playerId: 'battleship.playerId',
@@ -157,7 +157,9 @@
       try {
         await apiService.get(`/api/games/${state.currentGameId}/ships?player_id=${pid}&requester_id=${state.playerId}`);
         return pid;
-      } catch (_) {
+      } catch (err) {
+        // 403 means player is in-game but their ships are hidden from this requester.
+        if (err && err.status === 403) return pid;
         return null;
       }
     })).then((ids) => ids.filter((x) => x != null));
@@ -317,7 +319,7 @@
       coords.push({ row: rr, col: cc });
     }
     state.localShips.push(coords);
-    ui.placementShipLabel.textContent = SHIP_SPECS[state.localShips.length] ? `SHIP ${state.localShips.length + 1}` : 'READY';
+    ui.placementShipLabel.textContent = SHIP_SPECS[state.localShips.length] ? `1x${SHIP_SPECS[state.localShips.length]}` : 'READY';
     renderPlacementPreview();
   }
 
@@ -332,7 +334,7 @@
       setStatus('Place all 3 ships before submitting.');
       return;
     }
-    const ships = state.localShips.map((ship) => [ship[0].row, ship[0].col]);
+    const ships = state.localShips.flat().map((s) => [s.row, s.col]);
     try {
       await apiService.post(`/api/games/${state.currentGameId}/ships`, { player_id: state.playerId, ships });
       await apiService.post(`/api/games/${state.currentGameId}/start`, {});
@@ -438,7 +440,7 @@
       state.currentGameId = out.game_id;
       state.gridSize = out.grid_size;
       state.localShips = [];
-      ui.placementShipLabel.textContent = 'SHIP 1';
+      ui.placementShipLabel.textContent = '1x4';
       showScreen('game');
       setStatus(`Created game #${out.game_id}. Place ships.`);
       startGamePolling();
@@ -477,7 +479,7 @@
     ui.orientV.addEventListener('click', () => { state.vertical = true; ui.orientV.classList.add('active-mini'); ui.orientH.classList.remove('active-mini'); });
     ui.clearShipsBtn.addEventListener('click', () => {
       state.localShips = [];
-      ui.placementShipLabel.textContent = 'SHIP 1';
+      ui.placementShipLabel.textContent = '1x4';
       renderPlacementPreview();
     });
     ui.submitShipsBtn.addEventListener('click', submitShips);

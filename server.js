@@ -431,8 +431,8 @@ app.post('/api/games/:id/place', async (req, res) => {
     if (!Array.isArray(ships)) {
       return res.status(400).json({ error: 'ships must be an array' });
     }
-    if (ships.length !== 3) {
-      return res.status(400).json({ error: 'Exactly 3 ships required' });
+    if (ships.length !== 9) {
+      return res.status(400).json({ error: 'Exactly 9 ship cells required (4/3/2 ships)' });
     }
 
     const gameResult = await pool.query(
@@ -560,8 +560,8 @@ app.post('/api/games/:id/ships', async (req, res) => {
     if (!Array.isArray(ships)) {
       return res.status(400).json({ error: 'ships must be an array' });
     }
-    if (ships.length !== 3) {
-      return res.status(400).json({ error: 'Exactly 3 ships required' });
+    if (ships.length !== 9) {
+      return res.status(400).json({ error: 'Exactly 9 ship cells required (4/3/2 ships)' });
     }
 
     const gameResult = await pool.query(
@@ -1123,7 +1123,7 @@ app.post('/api/test/games/:id/ships', async (req, res) => {
     if (isNaN(pid) || pid < 1) return res.status(400).json({ error: 'Invalid player_id' });
 
     if (!Array.isArray(ships)) return res.status(400).json({ error: 'ships must be an array' });
-    if (ships.length !== 3) return res.status(400).json({ error: 'Exactly 3 ships required' });
+    if (ships.length !== 9) return res.status(400).json({ error: 'Exactly 9 ship cells required (4/3/2 ships)' });
 
     const gameResult = await pool.query('SELECT * FROM games WHERE game_id = $1', [gameId]);
     if (gameResult.rows.length === 0) {

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Battleship — Radar Command</title>
+  <title>Battleship Multiplayer Radar Console</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;800&family=Share+Tech+Mono&display=swap" rel="stylesheet" />
@@ -17,111 +17,91 @@
   </div>
 
   <header class="header">
-    <h1 class="title">
-      <span class="title-icon">◉</span>
-      BATTLESHIP
-      <span class="title-sub">RADAR COMMAND</span>
-    </h1>
-    <div class="status-bar">
-      <span class="status-label">STATUS</span>
-      <span id="status" class="status-text">READY — FIRE WHEN CLEAR</span>
-    </div>
-    <div class="difficulty-bar">
-      <span class="status-label">DIFFICULTY</span>
-      <button type="button" id="diff-easy" class="btn-diff" data-diff="easy">EASY</button>
-      <button type="button" id="diff-medium" class="btn-diff active" data-diff="medium">MEDIUM</button>
-      <button type="button" id="diff-hard" class="btn-diff" data-diff="hard">HARD</button>
-    </div>
+    <h1 class="title"><span class="title-icon">◉</span> BATTLESHIP <span class="title-sub">MULTIPLAYER RADAR COMMAND</span></h1>
+    <div class="status-bar"><span class="status-label">STATUS</span> <span id="status" class="status-text">Select server and connect.</span></div>
   </header>
 
-  <main class="game-container">
-    <section class="radar-panel your-radar">
-      <div class="panel-header">
-        <span class="panel-title">YOUR FLEET</span>
-        <span class="panel-coords">GRID ALPHA</span>
+  <main class="app-shell">
+    <section class="radar-panel">
+      <div class="panel-header"><span class="panel-title">SERVER LINK</span></div>
+      <div class="control-row">
+        <label for="server-select">Class Server</label>
+        <select id="server-select"></select>
       </div>
-      <div id="placement-controls" class="placement-controls">
-        <p class="placement-instruction">Place ship: <strong id="placement-ship-label">1×4</strong></p>
-        <div class="orientation-row">
-          <button type="button" id="orient-h" class="btn-orient active">H</button>
-          <button type="button" id="orient-v" class="btn-orient">V</button>
-        </div>
-        <p class="placement-hint">Click a cell on your grid to place. When all 3 are placed, click Start Battle.</p>
-        <div id="placement-actions" class="placement-actions hidden">
-          <button type="button" id="start-battle" class="btn-radar">START BATTLE</button>
-          <button type="button" id="rearrange" class="btn-radar btn-rearrange">REARRANGE</button>
-        </div>
+      <div class="control-row">
+        <label for="server-input">Manual URL</label>
+        <input id="server-input" type="text" placeholder="https://example.onrender.com" />
       </div>
-      <div id="your-grid" class="radar-grid clickable" data-size="10"></div>
-      <div class="legend">
-        <span class="legend-item"><span class="dot hit-dot"></span> HIT</span>
-        <span class="legend-item"><span class="dot miss-dot"></span> MISS</span>
-        <span class="legend-item"><span class="dot ship-dot"></span> SHIP</span>
+      <div class="control-row">
+        <button id="connect-btn" class="btn-radar">CONNECT</button>
+        <span id="server-indicator" class="indicator unknown">?</span>
+        <span id="server-indicator-text">Not connected</span>
       </div>
     </section>
 
-    <section class="radar-panel enemy-radar">
-      <div class="panel-header">
-        <span class="panel-title">ENEMY WATERS</span>
-        <span class="panel-coords">GRID BRAVO</span>
+    <section id="register-screen" class="radar-panel hidden">
+      <div class="panel-header"><span class="panel-title">PLAYER REGISTRATION</span></div>
+      <div class="control-row">
+        <label for="username-input">Username</label>
+        <input id="username-input" type="text" maxlength="32" placeholder="alice" />
       </div>
-      <div id="enemy-grid" class="radar-grid clickable" data-size="10"></div>
-      <div class="legend">
-        <span class="legend-item"><span class="dot hit-dot"></span> HIT</span>
-        <span class="legend-item"><span class="dot miss-dot"></span> MISS</span>
+      <div class="control-row">
+        <button id="register-btn" class="btn-radar">REGISTER / REUSE</button>
+      </div>
+      <div id="identity-line" class="note-line"></div>
+    </section>
+
+    <section id="lobby-screen" class="radar-panel hidden">
+      <div class="panel-header"><span class="panel-title">LOBBY</span></div>
+      <div class="control-row row-wrap">
+        <input id="create-grid-size" type="number" min="5" max="15" value="10" />
+        <input id="create-max-players" type="number" min="2" max="8" value="3" />
+        <button id="create-game-btn" class="btn-radar">CREATE GAME</button>
+        <button id="refresh-lobby-btn" class="btn-radar">REFRESH</button>
+      </div>
+      <div id="games-list" class="list-box"></div>
+    </section>
+
+    <section id="game-screen" class="hidden">
+      <div class="game-layout">
+        <section class="radar-panel">
+          <div class="panel-header"><span class="panel-title">YOUR FLEET</span><span id="game-meta"></span></div>
+          <div id="placement-controls">
+            <div class="control-row row-wrap">
+              <span>Place ship: <strong id="placement-ship-label">1x4</strong></span>
+              <button id="orient-h" class="btn-radar active-mini">H</button>
+              <button id="orient-v" class="btn-radar">V</button>
+              <button id="submit-ships-btn" class="btn-radar">SUBMIT SHIPS</button>
+              <button id="clear-ships-btn" class="btn-radar">CLEAR</button>
+            </div>
+          </div>
+          <div id="your-grid" class="radar-grid"></div>
+        </section>
+
+        <section class="radar-panel">
+          <div class="panel-header"><span class="panel-title">OPPONENT SECTORS</span><span id="turn-indicator"></span></div>
+          <div id="opponent-grids" class="opponent-grids"></div>
+        </section>
+      </div>
+
+      <div class="game-layout lower">
+        <section class="radar-panel">
+          <div class="panel-header"><span class="panel-title">PLAYER STATS</span></div>
+          <div id="stats-panel" class="stats-grid"></div>
+        </section>
+        <section class="radar-panel">
+          <div class="panel-header"><span class="panel-title">MOVE HISTORY</span></div>
+          <div id="moves-log" class="list-box"></div>
+        </section>
+      </div>
+
+      <div class="control-row row-wrap">
+        <button id="back-to-lobby-btn" class="btn-radar">BACK TO LOBBY</button>
       </div>
     </section>
   </main>
 
-  <section class="scoreboard-container">
-    <div class="scoreboard-panel">
-      <div class="panel-header">
-        <span class="panel-title">COMBAT RECORD</span>
-        <button type="button" id="reset-scoreboard" class="btn-reset-stats" title="Reset all stats">RESET</button>
-      </div>
-      <div class="scoreboard-grid">
-        <div class="stat-card">
-          <span class="stat-value" id="stat-wins">0</span>
-          <span class="stat-label">VICTORIES</span>
-        </div>
-        <div class="stat-card">
-          <span class="stat-value" id="stat-losses">0</span>
-          <span class="stat-label">DEFEATS</span>
-        </div>
-        <div class="stat-card">
-          <span class="stat-value" id="stat-total">0</span>
-          <span class="stat-label">TOTAL GAMES</span>
-        </div>
-        <div class="stat-card">
-          <span class="stat-value" id="stat-accuracy">0%</span>
-          <span class="stat-label">ACCURACY</span>
-        </div>
-        <div class="stat-card">
-          <span class="stat-value" id="stat-best">—</span>
-          <span class="stat-label">BEST GAME</span>
-        </div>
-        <div class="stat-card">
-          <span class="stat-value" id="stat-streak">0</span>
-          <span class="stat-label">WIN STREAK</span>
-        </div>
-      </div>
-      <div id="game-history" class="game-history"></div>
-    </div>
-  </section>
-
-  <footer class="footer">
-    <div class="ships-remaining">
-      <span class="footer-label">YOUR SHIPS:</span>
-      <span id="your-ships-count">3</span>
-      <span class="footer-label">ENEMY SHIPS:</span>
-      <span id="enemy-ships-count">3</span>
-    </div>
-    <button id="new-game" class="btn-radar">NEW GAME</button>
-    <button id="restart-game" class="btn-radar btn-rearrange">RESTART BATTLE</button>
-  </footer>
-
   <div id="hit-explosion" class="explosion" aria-hidden="true"></div>
-
   <script src="game.js"></script>
 </body>
 </html>

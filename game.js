@@ -1,426 +1,484 @@
-/**
- * Battleship V2+ — Client
- * Uses server API for all game state; no browser-refresh hacks.
- */
 (function () {
   'use strict';
 
-  const GRID_SIZE = 10;
-  const SHIP_SPECS = [
-    { name: '1×4', length: 4 },
-    { name: '1×3', length: 3 },
-    { name: '1×2', length: 2 },
+  const SHIP_SPECS = [4, 3, 2];
+  const STORAGE_KEYS = {
+    baseUrl: 'battleship.baseUrl',
+    playerId: 'battleship.playerId',
+    username: 'battleship.username',
+  };
+  const CLASS_SERVER_OPTIONS = [
+    { label: 'Localhost (3000)', url: 'http://localhost:3000' },
   ];
 
-  const API = '/api';
-  let serverState = null; // { state, winner, yourShips, yourHits, yourMisses, enemyHits, enemyMisses, yourShipsLeft, enemyShipsLeft }
-  let placementIndex = 0;
-  let placementVertical = false;
-  let localShips = []; // only during SETUP before submit
+  const apiService = (() => {
+    let baseUrl = '';
+    function normalize(url) { return (url || '').trim().replace(/\/+$/, ''); }
+    function setBaseUrl(url) { baseUrl = normalize(url); localStorage.setItem(STORAGE_KEYS.baseUrl, baseUrl); }
+    function getBaseUrl() { return baseUrl; }
+    async function request(path, options = {}) {
+      if (!baseUrl) throw new Error('Connect to a server first.');
+      const res = await fetch(`${baseUrl}${path}`, options);
+      let data = null;
+      try { data = await res.json(); } catch (_) {}
+      if (!res.ok) {
+        const msg = data && data.error ? data.error : `Request failed (${res.status})`;
+        const err = new Error(msg);
+        err.status = res.status;
+        throw err;
+      }
+      return data;
+    }
+    async function get(path) { return request(path); }
+    async function post(path, body) {
+      return request(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body || {}),
+      });
+    }
+    return { setBaseUrl, getBaseUrl, get, post, normalize };
+  })();
 
-  const yourGridEl = document.getElementById('your-grid');
-  const enemyGridEl = document.getElementById('enemy-grid');
-  const statusEl = document.getElementById('status');
-  const yourShipsCountEl = document.getElementById('your-ships-count');
-  const enemyShipsCountEl = document.getElementById('enemy-ships-count');
-  const newGameBtn = document.getElementById('new-game');
-  const restartGameBtn = document.getElementById('restart-game');
-  const explosionEl = document.getElementById('hit-explosion');
-  const placementControlsEl = document.getElementById('placement-controls');
-  const placementShipLabel = document.getElementById('placement-ship-label');
-  const placementActionsEl = document.getElementById('placement-actions');
-  const startBattleBtn = document.getElementById('start-battle');
-  const rearrangeBtn = document.getElementById('rearrange');
-  const orientH = document.getElementById('orient-h');
-  const orientV = document.getElementById('orient-v');
+  const ui = {
+    status: document.getElementById('status'),
+    serverSelect: document.getElementById('server-select'),
+    serverInput: document.getElementById('server-input'),
+    connectBtn: document.getElementById('connect-btn'),
+    serverIndicator: document.getElementById('server-indicator'),
+    serverIndicatorText: document.getElementById('server-indicator-text'),
+    registerScreen: document.getElementById('register-screen'),
+    lobbyScreen: document.getElementById('lobby-screen'),
+    gameScreen: document.getElementById('game-screen'),
+    usernameInput: document.getElementById('username-input'),
+    registerBtn: document.getElementById('register-btn'),
+    identityLine: document.getElementById('identity-line'),
+    createGridSize: document.getElementById('create-grid-size'),
+    createMaxPlayers: document.getElementById('create-max-players'),
+    createGameBtn: document.getElementById('create-game-btn'),
+    refreshLobbyBtn: document.getElementById('refresh-lobby-btn'),
+    gamesList: document.getElementById('games-list'),
+    gameMeta: document.getElementById('game-meta'),
+    turnIndicator: document.getElementById('turn-indicator'),
+    yourGrid: document.getElementById('your-grid'),
+    opponentGrids: document.getElementById('opponent-grids'),
+    placementControls: document.getElementById('placement-controls'),
+    placementShipLabel: document.getElementById('placement-ship-label'),
+    orientH: document.getElementById('orient-h'),
+    orientV: document.getElementById('orient-v'),
+    submitShipsBtn: document.getElementById('submit-ships-btn'),
+    clearShipsBtn: document.getElementById('clear-ships-btn'),
+    statsPanel: document.getElementById('stats-panel'),
+    movesLog: document.getElementById('moves-log'),
+    backToLobbyBtn: document.getElementById('back-to-lobby-btn'),
+    explosion: document.getElementById('hit-explosion'),
+  };
 
-  // Difficulty buttons
-  const diffEasy = document.getElementById('diff-easy');
-  const diffMedium = document.getElementById('diff-medium');
-  const diffHard = document.getElementById('diff-hard');
-  const diffButtons = [diffEasy, diffMedium, diffHard];
+  const state = {
+    connected: false,
+    playerId: null,
+    username: '',
+    currentGameId: null,
+    pollingId: null,
+    gridSize: 10,
+    playersById: {},
+    participants: [],
+    moves: [],
+    game: null,
+    vertical: false,
+    localShips: [],
+  };
 
-  // Scoreboard elements
-  const statWins = document.getElementById('stat-wins');
-  const statLosses = document.getElementById('stat-losses');
-  const statTotal = document.getElementById('stat-total');
-  const statAccuracy = document.getElementById('stat-accuracy');
-  const statBest = document.getElementById('stat-best');
-  const statStreak = document.getElementById('stat-streak');
-  const gameHistoryEl = document.getElementById('game-history');
-  const resetScoreboardBtn = document.getElementById('reset-scoreboard');
-
-  let currentDifficulty = 'medium';
-
-  let audioCtx = null;
-
-  function playHitSound() {
-    try {
-      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      if (audioCtx.state === 'suspended') audioCtx.resume();
-      const ctx = audioCtx;
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      const filter = ctx.createBiquadFilter();
-      filter.type = 'lowpass';
-      filter.frequency.value = 800;
-      osc.connect(filter);
-      filter.connect(gain);
-      gain.connect(ctx.destination);
-      osc.frequency.setValueAtTime(180, ctx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(80, ctx.currentTime + 0.12);
-      osc.type = 'square';
-      gain.gain.setValueAtTime(0.2, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.15);
-      osc.start(ctx.currentTime);
-      osc.stop(ctx.currentTime + 0.15);
-    } catch (_) {}
+  function setStatus(msg) { ui.status.textContent = msg; }
+  function key(r, c) { return `${r},${c}`; }
+  function mapFriendlyError(err) {
+    const msg = (err && err.message) || '';
+    if (/Not this player/i.test(msg)) return 'Hold fire - it is not your turn.';
+    if (/Duplicate fire/i.test(msg)) return 'You already fired at that location.';
+    if (/finished/i.test(msg)) return 'Game over. Return to lobby to start another game.';
+    if (/not active/i.test(msg)) return 'Game is waiting for players to place ships.';
+    if (/not in this game/i.test(msg)) return 'You are not part of this game.';
+    return 'Action failed. Check server state and try again.';
   }
 
-  // ========== SCOREBOARD ==========
-
-  async function fetchScoreboard() {
-    try {
-      const data = await apiGet('/scoreboard');
-      syncScoreboard(data);
-    } catch (_) {
-      // scoreboard unavailable — ignore
+  function buildGrid(container, gridSize, onClick) {
+    container.innerHTML = '';
+    container.style.gridTemplateColumns = `repeat(${gridSize}, var(--cell-size))`;
+    for (let r = 0; r < gridSize; r++) {
+      for (let c = 0; c < gridSize; c++) {
+        const cell = document.createElement('div');
+        cell.className = 'cell';
+        cell.dataset.row = String(r);
+        cell.dataset.col = String(c);
+        if (onClick) {
+          cell.classList.add('fireable');
+          cell.addEventListener('click', () => onClick(r, c));
+        }
+        container.appendChild(cell);
+      }
     }
   }
 
-  function syncScoreboard(data) {
-    statWins.textContent = data.wins || 0;
-    statLosses.textContent = data.losses || 0;
-    statTotal.textContent = data.totalGames || 0;
-    statAccuracy.textContent = (data.accuracy || 0) + '%';
-    statBest.textContent = data.bestGame !== null ? data.bestGame + ' shots' : '—';
-    statStreak.textContent = data.currentWinStreak || 0;
+  function paintGrid(container, gridSize, shipCells, hitCells, missCells, clickable, fireHandler) {
+    container.innerHTML = '';
+    container.style.gridTemplateColumns = `repeat(${gridSize}, var(--cell-size))`;
+    for (let r = 0; r < gridSize; r++) {
+      for (let c = 0; c < gridSize; c++) {
+        const k = key(r, c);
+        const cell = document.createElement('div');
+        cell.className = 'cell';
+        if (shipCells.has(k)) cell.classList.add('ship');
+        if (hitCells.has(k)) cell.classList.add('hit');
+        if (missCells.has(k)) cell.classList.add('miss');
+        if (clickable && !hitCells.has(k) && !missCells.has(k)) {
+          cell.classList.add('fireable');
+          cell.addEventListener('click', () => fireHandler(r, c));
+        }
+        container.appendChild(cell);
+      }
+    }
+  }
 
-    // Render game history (most recent first)
-    gameHistoryEl.innerHTML = '';
-    const history = (data.gameHistory || []).slice().reverse();
-    if (history.length === 0) {
-      gameHistoryEl.innerHTML = '<div style="text-align:center;padding:0.5rem;opacity:0.5;">No games played yet</div>';
+  function updateServerIndicator(ok, text) {
+    ui.serverIndicator.className = `indicator ${ok ? 'ok' : 'fail'}`;
+    ui.serverIndicator.textContent = ok ? '✓' : '✕';
+    ui.serverIndicatorText.textContent = text;
+  }
+
+  function showScreen(name) {
+    ui.registerScreen.classList.toggle('hidden', name !== 'register');
+    ui.lobbyScreen.classList.toggle('hidden', name !== 'lobby');
+    ui.gameScreen.classList.toggle('hidden', name !== 'game');
+  }
+
+  function loadParticipantsByProbing() {
+    const allIds = Object.keys(state.playersById).map((id) => parseInt(id, 10));
+    return Promise.all(allIds.map(async (pid) => {
+      try {
+        await apiService.get(`/api/games/${state.currentGameId}/ships?player_id=${pid}&requester_id=${state.playerId}`);
+        return pid;
+      } catch (_) {
+        return null;
+      }
+    })).then((ids) => ids.filter((x) => x != null));
+  }
+
+  function getMoveCellsForPlayer(playerId) {
+    const hits = new Set();
+    const misses = new Set();
+    for (const m of state.moves) {
+      const coord = key(m.row, m.col);
+      if (m.player_id === playerId) {
+        if (m.result === 'hit') hits.add(coord);
+        if (m.result === 'miss') misses.add(coord);
+      }
+    }
+    return { hits, misses };
+  }
+
+  function getIncomingHitsOnMe() {
+    const hits = new Set();
+    for (const m of state.moves) {
+      if (m.player_id !== state.playerId && m.result === 'hit') {
+        hits.add(key(m.row, m.col));
+      }
+    }
+    return hits;
+  }
+
+  async function renderLobby() {
+    const games = await apiService.get('/api/games');
+    ui.gamesList.innerHTML = '';
+    if (!games.length) {
+      ui.gamesList.innerHTML = '<div class="list-row">No games yet.</div>';
       return;
     }
-    for (const entry of history) {
-      const div = document.createElement('div');
-      div.className = 'history-entry';
-      const accuracy = entry.shots > 0 ? Math.round((entry.hits / entry.shots) * 100) : 0;
-      const dateStr = new Date(entry.date).toLocaleDateString();
-      div.innerHTML =
-        `<span class="history-result ${entry.result}">${entry.result.toUpperCase()}</span>` +
-        `<span class="history-detail">${entry.shots} shots · ${accuracy}% acc</span>` +
-        `<span class="history-diff">${entry.difficulty || 'medium'}</span>` +
-        `<span class="history-detail">${dateStr}</span>`;
-      gameHistoryEl.appendChild(div);
+    for (const g of games) {
+      const row = document.createElement('div');
+      row.className = 'list-row';
+      const info = document.createElement('div');
+      info.textContent = `Game #${g.id} | ${g.status} | ${g.player_count}/${g.max_players} players | grid ${g.grid_size}`;
+      const actions = document.createElement('div');
+      if (g.status === 'waiting') {
+        const joinBtn = document.createElement('button');
+        joinBtn.className = 'btn-radar';
+        joinBtn.textContent = 'JOIN';
+        joinBtn.addEventListener('click', async () => {
+          try {
+            await apiService.post(`/api/games/${g.id}/join`, { player_id: state.playerId });
+            state.currentGameId = g.id;
+            showScreen('game');
+            setStatus(`Joined game #${g.id}.`);
+            startGamePolling();
+          } catch (err) {
+            setStatus(mapFriendlyError(err));
+          }
+        });
+        actions.appendChild(joinBtn);
+      }
+      row.appendChild(info);
+      row.appendChild(actions);
+      ui.gamesList.appendChild(row);
     }
   }
 
-  async function resetScoreboard() {
-    if (!confirm('Reset all statistics? This cannot be undone.')) return;
+  async function refreshStats() {
+    const s = await apiService.get(`/api/players/${state.playerId}/stats`);
+    ui.statsPanel.innerHTML = `
+      <div class="stat-item"><span class="stat-value">${s.wins}</span><span class="stat-label">WINS</span></div>
+      <div class="stat-item"><span class="stat-value">${s.losses}</span><span class="stat-label">LOSSES</span></div>
+      <div class="stat-item"><span class="stat-value">${s.games_played}</span><span class="stat-label">GAMES</span></div>
+      <div class="stat-item"><span class="stat-value">${s.total_shots}</span><span class="stat-label">SHOTS</span></div>
+      <div class="stat-item"><span class="stat-value">${s.total_hits}</span><span class="stat-label">HITS</span></div>
+      <div class="stat-item"><span class="stat-value">${(s.accuracy * 100).toFixed(1)}%</span><span class="stat-label">ACCURACY</span></div>
+    `;
+  }
+
+  async function renderGame() {
+    if (!state.currentGameId) return;
+    const [game, moves] = await Promise.all([
+      apiService.get(`/api/games/${state.currentGameId}`),
+      apiService.get(`/api/games/${state.currentGameId}/moves`),
+    ]);
+    state.game = game;
+    state.moves = moves;
+    state.gridSize = game.grid_size;
+
+    const myShipsData = await apiService.get(`/api/games/${state.currentGameId}/ships?player_id=${state.playerId}&requester_id=${state.playerId}`);
+    const myShipSet = new Set((myShipsData.ships || []).map((s) => key(s.row, s.col)));
+    const incomingHits = getIncomingHitsOnMe();
+    const incomingMisses = new Set();
+
+    for (const m of state.moves) {
+      if (m.player_id !== state.playerId && m.result === 'miss') incomingMisses.add(key(m.row, m.col));
+    }
+
+    const activePlayers = await loadParticipantsByProbing();
+    state.participants = activePlayers.length ? activePlayers : [state.playerId];
+    const meIdx = state.participants.indexOf(state.playerId);
+    const expectedId = state.participants[(game.current_turn_index % state.participants.length + state.participants.length) % state.participants.length];
+    const isMyTurn = game.status === 'active' && expectedId === state.playerId;
+
+    ui.gameMeta.textContent = `Game #${game.game_id} | ${game.status}`;
+    ui.turnIndicator.textContent = game.status === 'finished'
+      ? 'Game finished'
+      : isMyTurn ? 'Your turn' : `Waiting for ${state.playersById[expectedId] || `Player ${expectedId}`}`;
+    ui.placementControls.classList.toggle('hidden', myShipSet.size > 0 || game.status !== 'waiting');
+
+    paintGrid(ui.yourGrid, state.gridSize, myShipSet, incomingHits, incomingMisses, game.status === 'waiting' && myShipSet.size === 0, onPlaceCellClick);
+
+    ui.opponentGrids.innerHTML = '';
+    for (const pid of state.participants) {
+      if (pid === state.playerId) continue;
+      const block = document.createElement('div');
+      block.className = 'opponent-block';
+      const label = document.createElement('h4');
+      label.textContent = state.playersById[pid] || `Player ${pid}`;
+      const grid = document.createElement('div');
+      grid.className = 'radar-grid';
+      const marks = getMoveCellsForPlayer(state.playerId);
+      paintGrid(grid, state.gridSize, new Set(), marks.hits, marks.misses, isMyTurn && game.status === 'active', (r, c) => onFire(pid, r, c));
+      block.appendChild(label);
+      block.appendChild(grid);
+      ui.opponentGrids.appendChild(block);
+    }
+
+    ui.movesLog.innerHTML = '';
+    for (const m of state.moves) {
+      const row = document.createElement('div');
+      row.className = 'list-row';
+      const who = state.playersById[m.player_id] || `Player ${m.player_id}`;
+      row.textContent = `${who} fired (${m.row},${m.col}) -> ${m.result.toUpperCase()} @ ${new Date(m.timestamp).toLocaleTimeString()}`;
+      ui.movesLog.appendChild(row);
+    }
+    if (!state.moves.length) ui.movesLog.innerHTML = '<div class="list-row">No moves yet.</div>';
+
+    await refreshStats();
+    if (game.status === 'finished') setStatus('Match finished. Winner decided.');
+    if (meIdx === -1) setStatus('You are no longer in this game.');
+  }
+
+  function onPlaceCellClick(r, c) {
+    const shipLength = SHIP_SPECS[state.localShips.length];
+    if (!shipLength) return;
+    const occupied = new Set();
+    for (const ship of state.localShips) ship.forEach((p) => occupied.add(key(p.row, p.col)));
+    const coords = [];
+    for (let i = 0; i < shipLength; i++) {
+      const rr = state.vertical ? r + i : r;
+      const cc = state.vertical ? c : c + i;
+      if (rr < 0 || rr >= state.gridSize || cc < 0 || cc >= state.gridSize) return;
+      if (occupied.has(key(rr, cc))) return;
+      coords.push({ row: rr, col: cc });
+    }
+    state.localShips.push(coords);
+    ui.placementShipLabel.textContent = SHIP_SPECS[state.localShips.length] ? `1x${SHIP_SPECS[state.localShips.length]}` : 'READY';
+    renderPlacementPreview();
+  }
+
+  function renderPlacementPreview() {
+    const shipSet = new Set();
+    for (const s of state.localShips) for (const p of s) shipSet.add(key(p.row, p.col));
+    paintGrid(ui.yourGrid, state.gridSize, shipSet, new Set(), new Set(), true, onPlaceCellClick);
+  }
+
+  async function submitShips() {
+    if (state.localShips.length !== 3) {
+      setStatus('Place all 3 ships before submitting.');
+      return;
+    }
+    const ships = state.localShips.flat().map((s) => [s.row, s.col]);
     try {
-      const data = await apiPost('/scoreboard/reset', {});
-      syncScoreboard(data);
-    } catch (_) {}
-  }
-
-  // ========== DIFFICULTY ==========
-
-  function syncDifficultyUI(diff) {
-    currentDifficulty = diff || 'medium';
-    diffButtons.forEach(btn => {
-      btn.classList.toggle('active', btn.dataset.diff === currentDifficulty);
-    });
-  }
-
-  function setDifficultyEnabled(enabled) {
-    diffButtons.forEach(btn => {
-      btn.disabled = !enabled;
-    });
-  }
-
-  async function changeDifficulty(diff) {
-    try {
-      const data = await apiPost('/game/difficulty', { difficulty: diff });
-      currentDifficulty = diff;
-      syncDifficultyUI(diff);
-      syncUI(data);
+      await apiService.post(`/api/games/${state.currentGameId}/ships`, { player_id: state.playerId, ships });
+      await apiService.post(`/api/games/${state.currentGameId}/start`, {});
+      state.localShips = [];
+      setStatus('Ships submitted.');
+      await renderGame();
     } catch (err) {
-      statusEl.textContent = err.message || 'Cannot change difficulty now';
+      setStatus(mapFriendlyError(err));
     }
   }
 
-  function key(r, c) {
-    return `${r},${c}`;
-  }
-
-  async function apiGet(path) {
-    const res = await fetch(API + path);
-    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
-    return res.json();
-  }
-
-  async function apiPost(path, body) {
-    const res = await fetch(API + path, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
-    return res.json();
-  }
-
-  function canPlaceAt(r, c, length, vertical, occupied) {
-    for (let i = 0; i < length; i++) {
-      const nr = vertical ? r + i : r;
-      const nc = vertical ? c : c + i;
-      if (nr < 0 || nr >= GRID_SIZE || nc < 0 || nc >= GRID_SIZE) return false;
-      if (occupied.has(key(nr, nc))) return false;
-    }
-    return true;
-  }
-
-  function buildShipAt(r, c, spec, vertical) {
-    const cells = [];
-    for (let i = 0; i < spec.length; i++) {
-      cells.push({ row: vertical ? r + i : r, col: vertical ? c : c + i });
-    }
-    return { name: spec.name, length: spec.length, cells };
-  }
-
-  function updatePlacementUI() {
-    if (placementIndex < SHIP_SPECS.length) {
-      placementShipLabel.textContent = SHIP_SPECS[placementIndex].name;
-      placementActionsEl.classList.add('hidden');
-    } else {
-      placementActionsEl.classList.remove('hidden');
-    }
-  }
-
-  function syncUI(data) {
-    serverState = data;
-    const state = data.state;
-    const placementPhase = state === 'SETUP';
-
-    // Sync difficulty UI
-    syncDifficultyUI(data.difficulty);
-    setDifficultyEnabled(placementPhase);
-
-    if (placementPhase) {
-      placementControlsEl.classList.remove('hidden');
-      restartGameBtn.style.display = 'none';
-      yourShipsCountEl.textContent = localShips.length;
-    } else {
-      placementControlsEl.classList.add('hidden');
-      if (state === 'PLAYER_TURN' || state === 'COMPUTER_TURN' || state === 'GAME_OVER') {
-        restartGameBtn.style.display = 'inline-block';
-      }
-      yourShipsCountEl.textContent = data.yourShipsLeft ?? 3;
-    }
-    enemyShipsCountEl.textContent = data.enemyShipsLeft ?? 3;
-
-    const diffLabel = (data.difficulty || 'medium').toUpperCase();
-    if (state === 'GAME_OVER') {
-      const resultText = data.winner === 'player'
-        ? 'VICTORY — ENEMY FLEET DESTROYED'
-        : 'DEFEAT — FLEET DESTROYED';
-      statusEl.textContent = resultText + ' [' + diffLabel + ']';
-      // Refresh scoreboard after game ends
-      fetchScoreboard();
-    } else if (state === 'PLAYER_TURN') {
-      statusEl.textContent = 'YOUR TURN — SELECT TARGET ON ENEMY GRID [' + diffLabel + ']';
-    } else if (state === 'COMPUTER_TURN') {
-      statusEl.textContent = 'ENEMY TURN — INCOMING...';
-    } else if (placementPhase) {
-      statusEl.textContent = 'PLACE YOUR SHIPS — CLICK GRID BELOW [' + diffLabel + ']';
-    }
-
-    const yourShips = placementPhase ? localShips : (data.yourShips || []);
-    const shipCells = new Set();
-    yourShips.forEach(s => s.cells.forEach(c => shipCells.add(key(c.row, c.col))));
-    const yourHits = new Set(data.yourHits || []);
-    const yourMisses = new Set(data.yourMisses || []);
-    const enemyHits = new Set(data.enemyHits || []);
-    const enemyMisses = new Set(data.enemyMisses || []);
-
-    yourGridEl.innerHTML = '';
-    for (let r = 0; r < GRID_SIZE; r++) {
-      for (let c = 0; c < GRID_SIZE; c++) {
-        const cell = document.createElement('div');
-        cell.className = 'cell';
-        cell.dataset.row = r;
-        cell.dataset.col = c;
-        if (shipCells.has(key(r, c))) cell.classList.add('ship');
-        if (yourHits.has(key(r, c))) cell.classList.add('hit');
-        if (yourMisses.has(key(r, c))) cell.classList.add('miss');
-        yourGridEl.appendChild(cell);
-      }
-    }
-
-    if (placementPhase) {
-      yourGridEl.classList.add('clickable');
-      yourGridEl.querySelectorAll('.cell').forEach(el => {
-        el.addEventListener('click', onYourGridClickPlace);
-      });
-    } else {
-      yourGridEl.classList.remove('clickable');
-    }
-
-    enemyGridEl.innerHTML = '';
-    for (let r = 0; r < GRID_SIZE; r++) {
-      for (let c = 0; c < GRID_SIZE; c++) {
-        const cell = document.createElement('div');
-        cell.className = 'cell';
-        cell.dataset.row = r;
-        cell.dataset.col = c;
-        if (enemyHits.has(key(r, c))) cell.classList.add('hit');
-        if (enemyMisses.has(key(r, c))) cell.classList.add('miss');
-        enemyGridEl.appendChild(cell);
-      }
-    }
-    if (state === 'PLAYER_TURN') {
-      enemyGridEl.querySelectorAll('.cell:not(.hit):not(.miss)').forEach(el => {
-        el.addEventListener('click', onEnemyCellClick);
-      });
-    }
-  }
-
-  function onYourGridClickPlace(e) {
-    const cell = e.target.closest('.cell');
-    if (!cell || placementIndex >= SHIP_SPECS.length) return;
-    const row = parseInt(cell.dataset.row, 10);
-    const col = parseInt(cell.dataset.col, 10);
-    const spec = SHIP_SPECS[placementIndex];
-    const occupied = new Set(localShips.flatMap(s => s.cells.map(c => key(c.row, c.col))));
-    if (!canPlaceAt(row, col, spec.length, placementVertical, occupied)) return;
-    localShips.push(buildShipAt(row, col, spec, placementVertical));
-    placementIndex++;
-    updatePlacementUI();
-    syncUI({ ...serverState, yourShips: localShips, state: 'SETUP' });
-  }
-
-  async function startBattle() {
-    if (localShips.length !== 3) return;
-    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  async function onFire(_targetPlayerId, r, c) {
     try {
-      const data = await apiPost('/game/place', { ships: localShips });
-      syncUI(data);
-    } catch (err) {
-      statusEl.textContent = 'Placement rejected: ' + (err.message || 'try again');
-    }
-  }
-
-  function rearrange() {
-    localShips = [];
-    placementIndex = 0;
-    placementShipLabel.textContent = SHIP_SPECS[0].name;
-    placementActionsEl.classList.add('hidden');
-    syncUI({
-      state: 'SETUP',
-      winner: null,
-      difficulty: currentDifficulty,
-      yourShips: [],
-      yourHits: [],
-      yourMisses: [],
-      enemyHits: [],
-      enemyMisses: [],
-      yourShipsLeft: 0,
-      enemyShipsLeft: 3,
-    });
-  }
-
-  async function onEnemyCellClick(e) {
-    const cell = e.target.closest('.cell');
-    if (!cell || cell.classList.contains('hit') || cell.classList.contains('miss')) return;
-    const row = parseInt(cell.dataset.row, 10);
-    const col = parseInt(cell.dataset.col, 10);
-    const prevEnemyHits = new Set(serverState.enemyHits || []);
-    try {
-      const data = await apiPost('/game/fire', { row, col });
-      const newHit = (data.enemyHits || []).some(k => !prevEnemyHits.has(k));
-      if (newHit) {
-        playHitSound();
-        explosionEl.classList.remove('flash');
-        void explosionEl.offsetWidth;
-        explosionEl.classList.add('flash');
-        setTimeout(() => explosionEl.classList.remove('flash'), 400);
+      const before = state.moves.filter((m) => m.player_id === state.playerId && m.result === 'hit').length;
+      const out = await apiService.post(`/api/games/${state.currentGameId}/fire`, { player_id: state.playerId, row: r, col: c });
+      if (out.result === 'hit') {
+        ui.explosion.classList.remove('flash');
+        void ui.explosion.offsetWidth;
+        ui.explosion.classList.add('flash');
       }
-      syncUI(data);
-    } catch (err) {
-      statusEl.textContent = (err.message || 'Fire failed') + ' — try again';
-    }
-  }
-
-  async function loadGame() {
-    try {
-      const data = await apiGet('/game');
-      if (data.state === 'SETUP') {
-        localShips = Array.isArray(data.yourShips) ? data.yourShips : [];
-        placementIndex = localShips.length;
-        placementShipLabel.textContent = SHIP_SPECS[Math.min(placementIndex, 2)].name;
-        updatePlacementUI();
+      if (out.game_status === 'finished' && out.winner_id != null) {
+        const winner = state.playersById[out.winner_id] || `Player ${out.winner_id}`;
+        setStatus(`Game over. Winner: ${winner}.`);
       } else {
-        localShips = Array.isArray(data.yourShips) ? data.yourShips : [];
+        const after = before + (out.result === 'hit' ? 1 : 0);
+        setStatus(`${out.result === 'hit' ? 'Hit confirmed.' : 'Miss.'} Total hits: ${after}.`);
       }
-      syncUI(data);
+      await renderGame();
+    } catch (err) {
+      setStatus(mapFriendlyError(err));
+    }
+  }
+
+  function stopPolling() {
+    if (state.pollingId) clearInterval(state.pollingId);
+    state.pollingId = null;
+  }
+  function startLobbyPolling() {
+    stopPolling();
+    state.pollingId = setInterval(() => renderLobby().catch(() => {}), 3000);
+  }
+  function startGamePolling() {
+    stopPolling();
+    renderGame().catch((e) => setStatus(mapFriendlyError(e)));
+    state.pollingId = setInterval(() => renderGame().catch(() => {}), 3000);
+  }
+
+  async function connectServer() {
+    const selected = ui.serverInput.value.trim() || ui.serverSelect.value.trim();
+    const normalized = apiService.normalize(selected);
+    if (!normalized) {
+      setStatus('Enter a valid server URL.');
+      return;
+    }
+    apiService.setBaseUrl(normalized);
+    try {
+      await apiService.get('/api/players');
+      updateServerIndicator(true, 'Connected');
+      state.connected = true;
+      setStatus('Server reachable. Register or continue.');
+      showScreen('register');
+      const savedUsername = localStorage.getItem(STORAGE_KEYS.username) || '';
+      if (savedUsername) ui.usernameInput.value = savedUsername;
+      const savedId = localStorage.getItem(STORAGE_KEYS.playerId);
+      if (savedId) {
+        state.playerId = parseInt(savedId, 10);
+        state.username = savedUsername;
+        ui.identityLine.textContent = `Saved identity: ${state.username || 'Unknown'} (#${state.playerId})`;
+      }
+      const players = await apiService.get('/api/players');
+      state.playersById = {};
+      for (const p of players) state.playersById[p.id] = p.username;
     } catch (_) {
-      statusEl.textContent = 'Cannot reach server. Start server: npm start';
-      restartGameBtn.style.display = 'none';
+      updateServerIndicator(false, 'Offline');
+      setStatus('Cannot reach that server.');
     }
   }
 
-  async function newGame() {
+  async function registerPlayer() {
+    const username = ui.usernameInput.value.trim();
+    if (!username) { setStatus('Enter a username first.'); return; }
     try {
-      const data = await apiPost('/game/new', { difficulty: currentDifficulty });
-      localShips = [];
-      placementIndex = 0;
-      placementShipLabel.textContent = SHIP_SPECS[0].name;
-      placementActionsEl.classList.add('hidden');
-      orientH.classList.add('active');
-      orientV.classList.remove('active');
-      syncUI(data);
+      const out = await apiService.post('/api/players', { username });
+      state.playerId = out.player_id;
+      state.username = username;
+      localStorage.setItem(STORAGE_KEYS.playerId, String(state.playerId));
+      localStorage.setItem(STORAGE_KEYS.username, state.username);
+      ui.identityLine.textContent = `Logged in as ${state.username} (#${state.playerId})`;
+      setStatus('Registration complete. Entering lobby.');
+      showScreen('lobby');
+      await renderLobby();
+      startLobbyPolling();
     } catch (err) {
-      statusEl.textContent = err.message || 'New game failed';
+      setStatus(mapFriendlyError(err));
     }
   }
 
-  async function restartGame() {
+  async function createGame() {
     try {
-      const data = await apiPost('/game/restart', {});
-      syncUI(data);
+      const gridSize = parseInt(ui.createGridSize.value, 10) || 10;
+      const maxPlayers = parseInt(ui.createMaxPlayers.value, 10) || 3;
+      const out = await apiService.post('/api/games', { creator_id: state.playerId, grid_size: gridSize, max_players: maxPlayers });
+      state.currentGameId = out.game_id;
+      state.gridSize = out.grid_size;
+      state.localShips = [];
+      ui.placementShipLabel.textContent = '1x4';
+      showScreen('game');
+      setStatus(`Created game #${out.game_id}. Place ships.`);
+      startGamePolling();
     } catch (err) {
-      statusEl.textContent = err.message || 'Restart failed';
+      setStatus(mapFriendlyError(err));
     }
   }
 
-  orientH.addEventListener('click', () => {
-    placementVertical = false;
-    orientH.classList.add('active');
-    orientV.classList.remove('active');
-  });
-  orientV.addEventListener('click', () => {
-    placementVertical = true;
-    orientV.classList.add('active');
-    orientH.classList.remove('active');
-  });
-  startBattleBtn.addEventListener('click', startBattle);
-  rearrangeBtn.addEventListener('click', rearrange);
-  newGameBtn.addEventListener('click', newGame);
-  restartGameBtn.addEventListener('click', restartGame);
+  async function backToLobby() {
+    state.currentGameId = null;
+    state.localShips = [];
+    showScreen('lobby');
+    await renderLobby();
+    startLobbyPolling();
+  }
 
-  // Difficulty buttons
-  diffButtons.forEach(btn => {
-    btn.addEventListener('click', () => {
-      if (btn.disabled) return;
-      changeDifficulty(btn.dataset.diff);
+  function initServerOptions() {
+    ui.serverSelect.innerHTML = '';
+    for (const option of CLASS_SERVER_OPTIONS) {
+      const el = document.createElement('option');
+      el.value = option.url;
+      el.textContent = option.label;
+      ui.serverSelect.appendChild(el);
+    }
+    const stored = localStorage.getItem(STORAGE_KEYS.baseUrl);
+    if (stored) ui.serverInput.value = stored;
+  }
+
+  function bindEvents() {
+    ui.connectBtn.addEventListener('click', connectServer);
+    ui.registerBtn.addEventListener('click', registerPlayer);
+    ui.createGameBtn.addEventListener('click', createGame);
+    ui.refreshLobbyBtn.addEventListener('click', () => renderLobby().catch(() => {}));
+    ui.backToLobbyBtn.addEventListener('click', backToLobby);
+    ui.orientH.addEventListener('click', () => { state.vertical = false; ui.orientH.classList.add('active-mini'); ui.orientV.classList.remove('active-mini'); });
+    ui.orientV.addEventListener('click', () => { state.vertical = true; ui.orientV.classList.add('active-mini'); ui.orientH.classList.remove('active-mini'); });
+    ui.clearShipsBtn.addEventListener('click', () => {
+      state.localShips = [];
+      ui.placementShipLabel.textContent = '1x4';
+      renderPlacementPreview();
     });
-  });
+    ui.submitShipsBtn.addEventListener('click', submitShips);
+  }
 
-  // Scoreboard reset
-  resetScoreboardBtn.addEventListener('click', resetScoreboard);
-
-  restartGameBtn.style.display = 'none';
-  loadGame();
-  fetchScoreboard();
+  initServerOptions();
+  bindEvents();
+  showScreen('register');
 })();

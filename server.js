@@ -505,7 +505,7 @@ app.post('/api/games/:id/place', async (req, res) => {
     );
     const total = allPlacedResult.rows[0].total || 0;
     const placed = allPlacedResult.rows[0].placed ?? 0;
-    if (total > 0 && placed === total) {
+    if (total === game.max_players && total > 0 && placed === total) {
       await pool.query(
         'UPDATE games SET status = $1 WHERE game_id = $2',
         ['active', gameId]
@@ -634,7 +634,7 @@ app.post('/api/games/:id/ships', async (req, res) => {
     );
     const total = allPlacedResult.rows[0].total || 0;
     const placed = allPlacedResult.rows[0].placed ?? 0;
-    if (total > 0 && placed === total) {
+    if (total === game.max_players && total > 0 && placed === total) {
       await pool.query(
         'UPDATE games SET status = $1 WHERE game_id = $2',
         ['active', gameId]
@@ -1201,7 +1201,7 @@ app.post('/api/test/games/:id/ships', async (req, res) => {
     const total = allPlacedResult.rows[0].total || 0;
     const placed = allPlacedResult.rows[0].placed ?? 0;
 
-    if (total > 0 && placed === total) {
+    if (total === game.max_players && total > 0 && placed === total) {
       await pool.query('UPDATE games SET status = $1 WHERE game_id = $2', ['active', gameId]);
     }
 

@@ -97,6 +97,9 @@
     if (/Duplicate fire/i.test(msg)) return 'You already fired at that location.';
     if (/finished/i.test(msg)) return 'Game over. Return to lobby to start another game.';
     if (/not active/i.test(msg)) return 'Game is waiting for players to place ships.';
+    if (/already placed ships/i.test(msg)) return 'Your ships are already submitted. Waiting for other players.';
+    if (/Not all players have placed ships/i.test(msg)) return 'Waiting for all players to place ships.';
+    if (/Exactly 9 ship cells required/i.test(msg)) return 'Place all 3 ships (lengths 4, 3, 2) before submitting.';
     if (/not in this game/i.test(msg)) return 'You are not part of this game.';
     return 'Action failed. Check server state and try again.';
   }
@@ -339,10 +342,20 @@
     }
     const ships = state.localShips.flat().map((s) => [s.row, s.col]);
     try {
-      await apiService.post(`/api/games/${state.currentGameId}/ships`, { player_id: state.playerId, ships });
-      await apiService.post(`/api/games/${state.currentGameId}/start`, {});
+      try {
+        await apiService.post(`/api/games/${state.currentGameId}/ships`, { player_id: state.playerId, ships });
+      } catch (shipErr) {
+        // If ships were already submitted from this client/tab previously, continue gracefully.
+        if (!/already placed ships/i.test((shipErr && shipErr.message) || '')) throw shipErr;
+      }
+      try {
+        await apiService.post(`/api/games/${state.currentGameId}/start`, {});
+      } catch (startErr) {
+        // Expected while game is still filling or other players are placing.
+        if (!(startErr && startErr.status === 400)) throw startErr;
+      }
       state.localShips = [];
-      setStatus('Ships submitted.');
+      setStatus('Ships submitted. Waiting for other players to join/place ships.');
       await renderGame();
     } catch (err) {
       setStatus(mapFriendlyError(err));

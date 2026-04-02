@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const SHIP_SPECS = [4, 3, 2];
+  const SHIP_SPECS = [1, 1, 1];
   const STORAGE_KEYS = {
     baseUrl: 'battleship.baseUrl',
     playerId: 'battleship.playerId',
@@ -312,7 +312,7 @@
       coords.push({ row: rr, col: cc });
     }
     state.localShips.push(coords);
-    ui.placementShipLabel.textContent = SHIP_SPECS[state.localShips.length] ? `1x${SHIP_SPECS[state.localShips.length]}` : 'READY';
+    ui.placementShipLabel.textContent = SHIP_SPECS[state.localShips.length] ? `SHIP ${state.localShips.length + 1}` : 'READY';
     renderPlacementPreview();
   }
 
@@ -327,7 +327,7 @@
       setStatus('Place all 3 ships before submitting.');
       return;
     }
-    const ships = state.localShips.flat().map((s) => [s.row, s.col]);
+    const ships = state.localShips.map((ship) => [ship[0].row, ship[0].col]);
     try {
       await apiService.post(`/api/games/${state.currentGameId}/ships`, { player_id: state.playerId, ships });
       await apiService.post(`/api/games/${state.currentGameId}/start`, {});
@@ -433,7 +433,7 @@
       state.currentGameId = out.game_id;
       state.gridSize = out.grid_size;
       state.localShips = [];
-      ui.placementShipLabel.textContent = '1x4';
+      ui.placementShipLabel.textContent = 'SHIP 1';
       showScreen('game');
       setStatus(`Created game #${out.game_id}. Place ships.`);
       startGamePolling();
@@ -472,7 +472,7 @@
     ui.orientV.addEventListener('click', () => { state.vertical = true; ui.orientV.classList.add('active-mini'); ui.orientH.classList.remove('active-mini'); });
     ui.clearShipsBtn.addEventListener('click', () => {
       state.localShips = [];
-      ui.placementShipLabel.textContent = '1x4';
+      ui.placementShipLabel.textContent = 'SHIP 1';
       renderPlacementPreview();
     });
     ui.submitShipsBtn.addEventListener('click', submitShips);

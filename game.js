@@ -154,6 +154,12 @@
     ui.gameScreen.classList.toggle('hidden', name !== 'game');
   }
 
+  async function refreshPlayersDirectory() {
+    const players = await apiService.get('/api/players');
+    state.playersById = {};
+    for (const p of players) state.playersById[p.id] = p.username;
+  }
+
   function loadParticipantsByProbing() {
     const allIds = Object.keys(state.playersById).map((id) => parseInt(id, 10));
     return Promise.all(allIds.map(async (pid) => {
@@ -192,6 +198,7 @@
   }
 
   async function renderLobby() {
+    await refreshPlayersDirectory();
     const games = await apiService.get('/api/games');
     ui.gamesList.innerHTML = '';
     if (!games.length) {
@@ -241,6 +248,7 @@
 
   async function renderGame() {
     if (!state.currentGameId) return;
+    await refreshPlayersDirectory();
     const [game, moves] = await Promise.all([
       apiService.get(`/api/games/${state.currentGameId}`),
       apiService.get(`/api/games/${state.currentGameId}/moves`),
@@ -267,6 +275,7 @@
 
     const activePlayers = await loadParticipantsByProbing();
     state.participants = activePlayers.length ? activePlayers : [state.playerId];
+    if (!state.participants.includes(state.playerId)) state.participants.push(state.playerId);
     const meIdx = state.participants.indexOf(state.playerId);
     const expectedId = state.participants[(game.current_turn_index % state.participants.length + state.participants.length) % state.participants.length];
     const isMyTurn = game.status === 'active' && expectedId === state.playerId;
@@ -308,7 +317,6 @@
 
     await refreshStats();
     if (game.status === 'finished') setStatus('Match finished. Winner decided.');
-    if (meIdx === -1) setStatus('You are no longer in this game.');
   }
 
   function onPlaceCellClick(r, c) {
@@ -420,9 +428,7 @@
         state.username = savedUsername;
         ui.identityLine.textContent = `Saved identity: ${state.username || 'Unknown'} (#${state.playerId})`;
       }
-      const players = await apiService.get('/api/players');
-      state.playersById = {};
-      for (const p of players) state.playersById[p.id] = p.username;
+      await refreshPlayersDirectory();
     } catch (_) {
       updateServerIndicator(false, 'Offline');
       setStatus('Cannot reach that server.');
@@ -436,6 +442,7 @@
       const out = await apiService.post('/api/players', { username });
       state.playerId = out.player_id;
       state.username = username;
+      state.playersById[state.playerId] = state.username;
       localStorage.setItem(STORAGE_KEYS.playerId, String(state.playerId));
       localStorage.setItem(STORAGE_KEYS.username, state.username);
       ui.identityLine.textContent = `Logged in as ${state.username} (#${state.playerId})`;

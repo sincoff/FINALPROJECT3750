@@ -100,7 +100,7 @@ async function main() {
   assert(gameRow.player_count === 2, `player_count expected 2, got ${gameRow.player_count}`);
   console.log('PASS: GET /api/games player_count updated to 2');
 
-  const aliceShips = [[0, 0], [0, 1], [0, 2], [0, 3], [2, 0], [2, 1], [2, 2], [4, 0], [4, 1]];
+  const aliceShips = [{ row: 0, col: 0 }, { row: 0, col: 1 }, { row: 0, col: 2 }];
   r = await post(`/api/games/${gameId}/ships`, { player_id: aliceId, ships: aliceShips });
   assert(r.status === 200, `ships alice expected 200, got ${r.status}`);
   assert(r.data && r.data.status === 'placed', 'ships response');
@@ -108,10 +108,10 @@ async function main() {
 
   r = await get(`/api/games/${gameId}/ships?player_id=${aliceId}`);
   assert(r.status === 200, `GET ships alice expected 200, got ${r.status}`);
-  assert(r.data && Array.isArray(r.data.ships) && r.data.ships.length >= 9, 'alice ships');
+  assert(r.data && Array.isArray(r.data.ships) && r.data.ships.length === 3, 'alice ships');
   console.log('PASS: GET /api/games/:id/ships returns alice ships');
 
-  const bobShips = [[1, 0], [1, 1], [1, 2], [1, 3], [3, 0], [3, 1], [3, 2], [5, 0], [5, 1]];
+  const bobShips = [{ row: 1, col: 0 }, { row: 1, col: 1 }, { row: 1, col: 2 }];
   r = await post(`/api/games/${gameId}/ships`, { player_id: bobId, ships: bobShips });
   assert(r.status === 200, `ships bob expected 200, got ${r.status}`);
   assert(r.data && r.data.status === 'placed', 'bob ships response');

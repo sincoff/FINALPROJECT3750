@@ -22,9 +22,11 @@
       let data = null;
       try { data = await res.json(); } catch (_) {}
       if (!res.ok) {
-        const msg = data && data.error ? data.error : `Request failed (${res.status})`;
+        const msg =
+          (data && (data.message || data.error)) || `Request failed (${res.status})`;
         const err = new Error(msg);
         err.status = res.status;
+        err.code = data && data.error;
         throw err;
       }
       return data;
@@ -93,15 +95,15 @@
   function key(r, c) { return `${r},${c}`; }
   function mapFriendlyError(err) {
     const msg = (err && err.message) || '';
-    if (/Not this player/i.test(msg)) return 'Hold fire - it is not your turn.';
-    if (/Duplicate fire/i.test(msg)) return 'You already fired at that location.';
-    if (/finished/i.test(msg)) return 'Game over. Return to lobby to start another game.';
-    if (/not active/i.test(msg)) return 'Game is waiting for players to place ships.';
+    if (/Not your turn/i.test(msg)) return 'Hold fire — it is not your turn.';
+    if (/Cell already fired/i.test(msg)) return 'You already fired at that location.';
+    if (/already finished/i.test(msg)) return 'Game over. Return to lobby to start another game.';
+    if (/has not started/i.test(msg)) return 'Game is waiting for players to finish setup.';
     if (/already placed ships/i.test(msg)) return 'Your ships are already submitted. Waiting for other players.';
-    if (/Not all players have placed ships/i.test(msg)) return 'Waiting for all players to place ships.';
+    if (/joined or placed/i.test(msg)) return 'Waiting for all players to join and place ships.';
     if (/Exactly 9 ship cells required/i.test(msg)) return 'Place all 3 ships (lengths 4, 3, 2) before submitting.';
     if (/not in this game/i.test(msg)) return 'You are not part of this game.';
-    return 'Action failed. Check server state and try again.';
+    return msg || 'Something went wrong. Try again.';
   }
 
   function buildGrid(container, gridSize, onClick) {
@@ -173,12 +175,13 @@
     return { hits, misses };
   }
 
-  function getIncomingHitsOnMe() {
+  function getIncomingHitsOnMe(myShipSet) {
     const hits = new Set();
     for (const m of state.moves) {
-      if (m.player_id !== state.playerId && m.result === 'hit') {
-        hits.add(key(m.row, m.col));
-      }
+      if (m.player_id === state.playerId) continue;
+      if (m.result !== 'hit') continue;
+      const k = key(m.row, m.col);
+      if (myShipSet.has(k)) hits.add(k);
     }
     return hits;
   }
@@ -197,7 +200,7 @@
       const info = document.createElement('div');
       info.textContent = `Game #${g.id} | ${g.status} | ${g.player_count}/${g.max_players} players | grid ${g.grid_size}`;
       const actions = document.createElement('div');
-      if (g.status === 'waiting') {
+      if (g.status === 'waiting_setup') {
         const joinBtn = document.createElement('button');
         joinBtn.className = 'btn-radar';
         joinBtn.textContent = 'JOIN';
@@ -247,31 +250,38 @@
     const serverShips = myShipsData.ships || [];
     const serverPlaced = serverShips.length > 0;
     const myShipSet = new Set(serverShips.map((s) => key(s.row, s.col)));
-    if (!serverPlaced && game.status === 'waiting' && state.localShips.length > 0) {
+    if (!serverPlaced && game.status === 'waiting_setup' && state.localShips.length > 0) {
       for (const ship of state.localShips) {
         for (const cell of ship) myShipSet.add(key(cell.row, cell.col));
       }
     }
-    const incomingHits = getIncomingHitsOnMe();
-    const incomingMisses = new Set();
-
-    for (const m of state.moves) {
-      if (m.player_id !== state.playerId && m.result === 'miss') incomingMisses.add(key(m.row, m.col));
-    }
+    const incomingHits = getIncomingHitsOnMe(myShipSet);
 
     const gamePlayers = await apiService.get(`/api/games/${state.currentGameId}/players`);
     state.participants = gamePlayers.map((p) => p.player_id);
     if (!state.participants.includes(state.playerId)) state.participants.push(state.playerId);
-    const meIdx = state.participants.indexOf(state.playerId);
-    const expectedId = state.participants[(game.current_turn_index % state.participants.length + state.participants.length) % state.participants.length];
-    const isMyTurn = game.status === 'active' && expectedId === state.playerId;
+
+    const incomingMisses = new Set();
+    for (const m of state.moves) {
+      if (m.player_id === state.playerId) continue;
+      if (m.result !== 'miss') continue;
+      if (state.participants.length === 2) incomingMisses.add(key(m.row, m.col));
+    }
+
+    const expectedId = game.current_turn_player_id;
+    const isMyTurn = game.status === 'playing' && expectedId === state.playerId;
 
     ui.gameMeta.textContent = `Game #${game.game_id} | ${game.status}`;
     ui.turnIndicator.textContent = game.status === 'finished'
       ? 'Game finished'
-      : isMyTurn ? 'Your turn' : `Waiting for ${state.playersById[expectedId] || `Player ${expectedId}`}`;
-    const canPlaceShips = game.status === 'waiting' && !serverPlaced && state.localShips.length < SHIP_SPECS.length;
-    ui.placementControls.classList.toggle('hidden', game.status !== 'waiting' || serverPlaced);
+      : expectedId == null
+        ? 'Waiting for setup or next phase'
+        : isMyTurn
+          ? 'Your turn'
+          : `Waiting for ${state.playersById[expectedId] || `Player ${expectedId}`}`;
+    const canPlaceShips =
+      game.status === 'waiting_setup' && !serverPlaced && state.localShips.length < SHIP_SPECS.length;
+    ui.placementControls.classList.toggle('hidden', game.status !== 'waiting_setup' || serverPlaced);
 
     paintGrid(ui.yourGrid, state.gridSize, myShipSet, incomingHits, incomingMisses, canPlaceShips, onPlaceCellClick);
 
@@ -285,7 +295,7 @@
       const grid = document.createElement('div');
       grid.className = 'radar-grid';
       const marks = getMoveCellsForPlayer(state.playerId);
-      paintGrid(grid, state.gridSize, new Set(), marks.hits, marks.misses, isMyTurn && game.status === 'active', (r, c) => onFire(pid, r, c));
+      paintGrid(grid, state.gridSize, new Set(), marks.hits, marks.misses, isMyTurn && game.status === 'playing', (r, c) => onFire(pid, r, c));
       block.appendChild(label);
       block.appendChild(grid);
       ui.opponentGrids.appendChild(block);
@@ -296,7 +306,8 @@
       const row = document.createElement('div');
       row.className = 'list-row';
       const who = state.playersById[m.player_id] || `Player ${m.player_id}`;
-      row.textContent = `${who} fired (${m.row},${m.col}) -> ${m.result.toUpperCase()} @ ${new Date(m.timestamp).toLocaleTimeString()}`;
+      const num = m.move_number != null ? `#${m.move_number} ` : '';
+      row.textContent = `${num}${who} fired (${m.row},${m.col}) -> ${m.result.toUpperCase()} @ ${new Date(m.timestamp).toLocaleTimeString()}`;
       ui.movesLog.appendChild(row);
     }
     if (!state.moves.length) ui.movesLog.innerHTML = '<div class="list-row">No moves yet.</div>';
@@ -447,7 +458,7 @@
       const maxPlayers = parseInt(ui.createMaxPlayers.value, 10) || 3;
       const out = await apiService.post('/api/games', { creator_id: state.playerId, grid_size: gridSize, max_players: maxPlayers });
       state.currentGameId = out.game_id;
-      state.gridSize = out.grid_size;
+      state.gridSize = gridSize;
       state.localShips = [];
       ui.placementShipLabel.textContent = '1x4';
       showScreen('game');

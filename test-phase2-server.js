@@ -32,26 +32,36 @@ const optionsReq = (path, headers) => request(path, { method: 'OPTIONS', headers
 async function main() {
   console.log(`Running Phase 2 server endpoint tests against ${BASE_URL}`);
 
-  // 1) POST /api/reset
-  let r = await post('/api/reset', {});
+  let r = await get('/api/');
+  assert(r.status === 200, `GET /api/ expected 200, got ${r.status}`);
+  assert(r.data && r.data.version === '2.3.0', 'GET /api/ version mismatch');
+  console.log('PASS: GET /api/');
+
+  r = await get('/api/version');
+  assert(r.status === 200 && r.data.api_version === '2.3.0', 'GET /api/version');
+  console.log('PASS: GET /api/version');
+
+  r = await get('/api/health');
+  assert(r.status === 200 && r.data.status === 'ok', 'GET /api/health');
+  assert(Number.isInteger(r.data.uptime_seconds), 'uptime_seconds');
+  console.log('PASS: GET /api/health');
+
+  r = await post('/api/reset', {});
   assert(r.status === 200, `POST /api/reset expected 200, got ${r.status}`);
   console.log('PASS: POST /api/reset');
 
-  // 2) POST /api/players alice
   r = await post('/api/players', { username: 'alice' });
   assert(r.status === 201 || r.status === 200, `POST /api/players alice expected 201/200, got ${r.status}`);
   const aliceId = r.data && r.data.player_id;
   assert(Number.isInteger(aliceId), 'alice player_id missing/invalid');
   console.log(`PASS: POST /api/players alice -> id=${aliceId}`);
 
-  // 3) POST /api/players bob
   r = await post('/api/players', { username: 'bob' });
   assert(r.status === 201 || r.status === 200, `POST /api/players bob expected 201/200, got ${r.status}`);
   const bobId = r.data && r.data.player_id;
   assert(Number.isInteger(bobId), 'bob player_id missing/invalid');
   console.log(`PASS: POST /api/players bob -> id=${bobId}`);
 
-  // 4) GET /api/players
   r = await get('/api/players');
   assert(r.status === 200, `GET /api/players expected 200, got ${r.status}`);
   assert(Array.isArray(r.data), 'GET /api/players expected array');
@@ -61,83 +71,70 @@ async function main() {
   assert(bobRow, 'GET /api/players missing bob with {id, username}');
   console.log('PASS: GET /api/players contains alice and bob');
 
-  // 5) GET /api/players/:id for alice
   r = await get(`/api/players/${aliceId}`);
   assert(r.status === 200, `GET /api/players/:id expected 200, got ${r.status}`);
-  assert(r.data && r.data.id === aliceId && r.data.username === 'alice', 'GET /api/players/:id returned wrong payload');
+  assert(r.data && r.data.id === aliceId && r.data.username === 'alice', 'GET /api/players/:id payload');
   console.log('PASS: GET /api/players/:id');
 
-  // 6) POST /api/games create
-  r = await post('/api/games', { creator_id: aliceId, grid_size: 10, max_players: 3 });
+  r = await post('/api/games', { creator_id: aliceId, grid_size: 10, max_players: 2 });
   assert(r.status === 201, `POST /api/games expected 201, got ${r.status}`);
-  const gameId = r.data && r.data.game_id;
-  assert(Number.isInteger(gameId), 'game_id missing/invalid');
+  assert(r.data.game_id != null && r.data.status === 'waiting_setup', 'POST /api/games response shape');
+  const gameId = r.data.game_id;
   console.log(`PASS: POST /api/games -> game=${gameId}`);
 
-  // 7) GET /api/games includes game
   r = await get('/api/games');
   assert(r.status === 200, `GET /api/games expected 200, got ${r.status}`);
-  assert(Array.isArray(r.data), 'GET /api/games expected array');
   let gameRow = r.data.find((g) => g && g.id === gameId);
-  assert(gameRow, 'GET /api/games missing created game');
-  assert(typeof gameRow.status === 'string', 'GET /api/games game missing status');
-  assert(gameRow.grid_size === 10, 'GET /api/games grid_size mismatch');
-  assert(Number.isInteger(gameRow.player_count), 'GET /api/games player_count missing/invalid');
+  assert(gameRow && gameRow.status === 'waiting_setup', 'list status waiting_setup');
+  assert(gameRow.grid_size === 10, 'grid_size');
+  assert(Number.isInteger(gameRow.player_count), 'player_count');
   console.log('PASS: GET /api/games contains created game');
 
-  // 8) POST /api/games/:id/join bob
   r = await post(`/api/games/${gameId}/join`, { player_id: bobId });
-  assert(r.status === 200, `POST /api/games/:id/join expected 200, got ${r.status}`);
+  assert(r.status === 200, `join expected 200, got ${r.status}`);
+  assert(r.data && r.data.status === 'joined', 'join response');
   console.log('PASS: POST /api/games/:id/join bob');
 
-  // 9) GET /api/games player_count now 2
   r = await get('/api/games');
-  assert(r.status === 200, `GET /api/games after join expected 200, got ${r.status}`);
   gameRow = r.data.find((g) => g && g.id === gameId);
-  assert(gameRow, 'GET /api/games missing game after join');
-  assert(gameRow.player_count === 2, `player_count expected 2 after join, got ${gameRow.player_count}`);
+  assert(gameRow.player_count === 2, `player_count expected 2, got ${gameRow.player_count}`);
   console.log('PASS: GET /api/games player_count updated to 2');
 
-  // 10) POST /api/games/:id/ships alice
   const aliceShips = [[0, 0], [0, 1], [0, 2], [0, 3], [2, 0], [2, 1], [2, 2], [4, 0], [4, 1]];
   r = await post(`/api/games/${gameId}/ships`, { player_id: aliceId, ships: aliceShips });
-  assert(r.status === 200 || r.status === 201, `POST /api/games/:id/ships alice expected 200/201, got ${r.status}`);
+  assert(r.status === 200, `ships alice expected 200, got ${r.status}`);
+  assert(r.data && r.data.status === 'placed', 'ships response');
   console.log('PASS: POST /api/games/:id/ships alice');
 
-  // 11) GET /api/games/:id/ships?player_id=alice_id
   r = await get(`/api/games/${gameId}/ships?player_id=${aliceId}`);
-  assert(r.status === 200, `GET /api/games/:id/ships for alice expected 200, got ${r.status}`);
-  assert(r.data && Array.isArray(r.data.ships), 'GET /api/games/:id/ships expected ships array');
-  assert(r.data.ships.length >= 9, `expected at least 9 ship cells for alice, got ${r.data.ships.length}`);
+  assert(r.status === 200, `GET ships alice expected 200, got ${r.status}`);
+  assert(r.data && Array.isArray(r.data.ships) && r.data.ships.length >= 9, 'alice ships');
   console.log('PASS: GET /api/games/:id/ships returns alice ships');
 
-  // 12) POST /api/games/:id/ships bob
   const bobShips = [[1, 0], [1, 1], [1, 2], [1, 3], [3, 0], [3, 1], [3, 2], [5, 0], [5, 1]];
   r = await post(`/api/games/${gameId}/ships`, { player_id: bobId, ships: bobShips });
-  assert(r.status === 200 || r.status === 201, `POST /api/games/:id/ships bob expected 200/201, got ${r.status}`);
+  assert(r.status === 200, `ships bob expected 200, got ${r.status}`);
+  assert(r.data && r.data.status === 'placed', 'bob ships response');
   console.log('PASS: POST /api/games/:id/ships bob');
 
-  // 13) POST /api/games/:id/start active or already auto-active
-  r = await post(`/api/games/${gameId}/start`, {});
-  if (r.status === 200) {
-    assert(r.data && r.data.status === 'active', `start response status expected active, got ${r.data && r.data.status}`);
-    console.log('PASS: POST /api/games/:id/start -> active');
-  } else {
-    // fallback verify auto activation via GET /api/games
-    const g = await get('/api/games');
-    assert(g.status === 200, `GET /api/games fallback expected 200, got ${g.status}`);
-    const row = g.data.find((x) => x.id === gameId);
-    assert(row && row.status === 'active', `game should be active (auto-activated), got ${row && row.status}`);
-    console.log('PASS: game is active (auto-activated)');
-  }
+  r = await get(`/api/games/${gameId}`);
+  assert(r.status === 200, `GET /api/games/:id expected 200`);
+  assert(r.data.status === 'playing', `game detail status playing, got ${r.data.status}`);
+  assert(Array.isArray(r.data.players) && r.data.players.length === 2, 'players array');
+  assert(r.data.current_turn_player_id != null, 'current_turn_player_id');
+  assert(r.data.total_moves === 0, 'total_moves');
+  console.log('PASS: GET /api/games/:id after both placed');
 
-  // 14) CORS header check with Origin
+  r = await post(`/api/games/${gameId}/start`, {});
+  assert(r.status === 200, `start expected 200`);
+  assert(r.data.status === 'playing', 'start still playing');
+  console.log('PASS: POST /api/games/:id/start');
+
   r = await get('/api/games', { Origin: 'http://localhost:8080' });
   const allowOrigin = r.headers.get('access-control-allow-origin');
   assert(allowOrigin != null && allowOrigin.length > 0, 'CORS header Access-Control-Allow-Origin missing');
   console.log(`PASS: CORS allow-origin present (${allowOrigin})`);
 
-  // 15) OPTIONS preflight check on /api/games
   r = await optionsReq('/api/games', {
     Origin: 'http://localhost:8080',
     'Access-Control-Request-Method': 'GET',
@@ -157,4 +154,3 @@ main().catch((err) => {
   console.error(`Phase 2 server test failed: ${err.message}`);
   process.exit(1);
 });
-

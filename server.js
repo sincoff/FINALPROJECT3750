@@ -51,6 +51,99 @@ function isValidId(s) {
   return !isNaN(n) && n >= 1;
 }
 
+const REQUIRED_SHIP_LENGTHS = [4, 3, 2];
+
+function normalizeAndValidateShips(ships, gridSize) {
+  if (!Array.isArray(ships)) {
+    return { error: 'ships must be an array' };
+  }
+  if (ships.length !== 3) {
+    return { error: 'Exactly 3 ships required' };
+  }
+
+  const parseCell = (cell) => {
+    if (Array.isArray(cell) && cell.length >= 2) {
+      return { row: parseInt(cell[0], 10), col: parseInt(cell[1], 10) };
+    }
+    if (typeof cell === 'object' && cell != null) {
+      return {
+        row: parseInt(cell.row ?? cell.ship_row, 10),
+        col: parseInt(cell.col ?? cell.ship_col, 10),
+      };
+    }
+    return { row: NaN, col: NaN };
+  };
+
+  const occupied = new Set();
+  const normalizedShips = [];
+  const observedLengths = [];
+
+  for (const rawShip of ships) {
+    let cells = [];
+
+    if (Array.isArray(rawShip)) {
+      if (rawShip.length >= 2 && !Array.isArray(rawShip[0]) && typeof rawShip[0] !== 'object') {
+        cells = [parseCell(rawShip)];
+      } else {
+        cells = rawShip.map(parseCell);
+      }
+    } else if (typeof rawShip === 'object' && rawShip != null) {
+      if (Array.isArray(rawShip.coordinates)) {
+        cells = rawShip.coordinates.map(parseCell);
+      } else {
+        cells = [parseCell(rawShip)];
+      }
+    } else {
+      return { error: 'Each ship must include coordinates' };
+    }
+
+    if (!cells.length) {
+      return { error: 'Each ship must include coordinates' };
+    }
+
+    const perShip = new Set();
+    for (const cell of cells) {
+      if (!Number.isInteger(cell.row) || !Number.isInteger(cell.col)) {
+        return { error: 'Each ship coordinate must include numeric row and col' };
+      }
+      if (cell.row < 0 || cell.row >= gridSize || cell.col < 0 || cell.col >= gridSize) {
+        return { error: 'Ship coordinates must be within grid bounds' };
+      }
+      const k = `${cell.row},${cell.col}`;
+      if (perShip.has(k) || occupied.has(k)) {
+        return { error: 'Duplicate ship coordinates' };
+      }
+      perShip.add(k);
+      occupied.add(k);
+    }
+
+    if (cells.length > 1) {
+      const sameRow = cells.every((c) => c.row === cells[0].row);
+      const sameCol = cells.every((c) => c.col === cells[0].col);
+      if (!sameRow && !sameCol) {
+        return { error: 'Ships must be in a straight line' };
+      }
+      const values = (sameRow ? cells.map((c) => c.col) : cells.map((c) => c.row)).sort((a, b) => a - b);
+      for (let i = 1; i < values.length; i++) {
+        if (values[i] !== values[i - 1] + 1) {
+          return { error: 'Ship coordinates must be contiguous' };
+        }
+      }
+    }
+
+    normalizedShips.push(cells);
+    observedLengths.push(cells.length);
+  }
+
+  const expected = [...REQUIRED_SHIP_LENGTHS].sort((a, b) => a - b);
+  const actual = [...observedLengths].sort((a, b) => a - b);
+  if (expected.length !== actual.length || expected.some((v, i) => v !== actual[i])) {
+    return { error: 'Ships must be lengths 4, 3, and 2' };
+  }
+
+  return { coords: normalizedShips.flat() };
+}
+
 async function initDatabase() {
   const client = await pool.connect();
   try {
@@ -556,13 +649,6 @@ app.post('/api/games/:id/place', async (req, res) => {
       return res.status(400).json(E.badRequest('Player does not exist'));
     }
 
-    if (!Array.isArray(ships)) {
-      return res.status(400).json(E.badRequest('ships must be an array'));
-    }
-    if (ships.length !== 3) {
-      return res.status(400).json(E.badRequest('Exactly 3 ships required'));
-    }
-
     const gameResult = await pool.query(
       'SELECT * FROM games WHERE game_id = $1',
       [gameId]
@@ -586,34 +672,11 @@ app.post('/api/games/:id/place', async (req, res) => {
       return res.status(400).json(E.badRequest('Player has already placed ships'));
     }
 
-    const gridSize = game.grid_size;
-    const coordSet = new Set();
-    const coords = [];
-
-    for (const s of ships) {
-      let r, c;
-      if (Array.isArray(s) && s.length >= 2) {
-        r = parseInt(s[0], 10);
-        c = parseInt(s[1], 10);
-      } else if (typeof s === 'object' && s != null) {
-        r = parseInt(s.row ?? s.ship_row, 10);
-        c = parseInt(s.col ?? s.ship_col, 10);
-      } else {
-        return res.status(400).json(E.badRequest('Each ship must have row and col'));
-      }
-      if (isNaN(r) || isNaN(c)) {
-        return res.status(400).json(E.badRequest('Each ship must have numeric row and col'));
-      }
-      if (r < 0 || r >= gridSize || c < 0 || c >= gridSize) {
-        return res.status(400).json(E.badRequest('Ship coordinates must be within grid bounds'));
-      }
-      const key = `${r},${c}`;
-      if (coordSet.has(key)) {
-        return res.status(400).json(E.badRequest('Duplicate ship coordinates'));
-      }
-      coordSet.add(key);
-      coords.push({ row: r, col: c });
+    const placement = normalizeAndValidateShips(ships, game.grid_size);
+    if (placement.error) {
+      return res.status(400).json(E.badRequest(placement.error));
     }
+    const coords = placement.coords;
 
     for (const { row: r, col: c } of coords) {
       await pool.query(
@@ -657,13 +720,6 @@ app.post('/api/games/:id/ships', async (req, res) => {
       return res.status(400).json(E.badRequest('Player does not exist'));
     }
 
-    if (!Array.isArray(ships)) {
-      return res.status(400).json(E.badRequest('ships must be an array'));
-    }
-    if (ships.length !== 3) {
-      return res.status(400).json(E.badRequest('Exactly 3 ships required'));
-    }
-
     const gameResult = await pool.query(
       'SELECT * FROM games WHERE game_id = $1',
       [gameId]
@@ -687,34 +743,11 @@ app.post('/api/games/:id/ships', async (req, res) => {
       return res.status(400).json(E.badRequest('Player has already placed ships'));
     }
 
-    const gridSize = game.grid_size;
-    const coordSet = new Set();
-    const coords = [];
-
-    for (const s of ships) {
-      let r, c;
-      if (Array.isArray(s) && s.length >= 2) {
-        r = parseInt(s[0], 10);
-        c = parseInt(s[1], 10);
-      } else if (typeof s === 'object' && s != null) {
-        r = parseInt(s.row ?? s.ship_row, 10);
-        c = parseInt(s.col ?? s.ship_col, 10);
-      } else {
-        return res.status(400).json(E.badRequest('Each ship must have row and col'));
-      }
-      if (isNaN(r) || isNaN(c)) {
-        return res.status(400).json(E.badRequest('Each ship must have numeric row and col'));
-      }
-      if (r < 0 || r >= gridSize || c < 0 || c >= gridSize) {
-        return res.status(400).json(E.badRequest('Ship coordinates must be within grid bounds'));
-      }
-      const key = `${r},${c}`;
-      if (coordSet.has(key)) {
-        return res.status(400).json(E.badRequest('Duplicate ship coordinates'));
-      }
-      coordSet.add(key);
-      coords.push({ row: r, col: c });
+    const placement = normalizeAndValidateShips(ships, game.grid_size);
+    if (placement.error) {
+      return res.status(400).json(E.badRequest(placement.error));
     }
+    const coords = placement.coords;
 
     for (const { row: r, col: c } of coords) {
       await pool.query(
@@ -1197,11 +1230,6 @@ app.post('/api/test/games/:id/ships', async (req, res) => {
     const pid = typeof player_id === 'number' ? player_id : parseInt(player_id, 10);
     if (isNaN(pid) || pid < 1) return res.status(400).json(E.badRequest('Invalid player_id'));
 
-    if (!Array.isArray(ships)) return res.status(400).json(E.badRequest('ships must be an array'));
-    if (ships.length !== 3) {
-      return res.status(400).json(E.badRequest('Exactly 3 ships required'));
-    }
-
     const gameResult = await pool.query('SELECT * FROM games WHERE game_id = $1', [gameId]);
     if (gameResult.rows.length === 0) {
       return res.status(404).json(E.notFound('Game not found'));
@@ -1225,36 +1253,11 @@ app.post('/api/test/games/:id/ships', async (req, res) => {
       return res.status(400).json(E.badRequest('Player is not in this game'));
     }
 
-    const gridSize = game.grid_size;
-    const coordSet = new Set();
-    const coords = [];
-
-    for (const s of ships) {
-      let r, c;
-      if (Array.isArray(s) && s.length >= 2) {
-        r = parseInt(s[0], 10);
-        c = parseInt(s[1], 10);
-      } else if (typeof s === 'object' && s != null) {
-        r = parseInt(s.row ?? s.ship_row, 10);
-        c = parseInt(s.col ?? s.ship_col, 10);
-      } else {
-        return res.status(400).json(E.badRequest('Each ship must have row and col'));
-      }
-
-      if (isNaN(r) || isNaN(c)) {
-        return res.status(400).json(E.badRequest('Each ship must have numeric row and col'));
-      }
-      if (r < 0 || r >= gridSize || c < 0 || c >= gridSize) {
-        return res.status(400).json(E.badRequest('Ship coordinates must be within grid bounds'));
-      }
-
-      const key = `${r},${c}`;
-      if (coordSet.has(key)) {
-        return res.status(400).json(E.badRequest('Duplicate ship coordinates'));
-      }
-      coordSet.add(key);
-      coords.push({ row: r, col: c });
+    const placement = normalizeAndValidateShips(ships, game.grid_size);
+    if (placement.error) {
+      return res.status(400).json(E.badRequest(placement.error));
     }
+    const coords = placement.coords;
 
     await pool.query('DELETE FROM ships WHERE game_id = $1 AND player_id = $2', [gameId, pid]);
 

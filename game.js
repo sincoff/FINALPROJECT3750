@@ -9,6 +9,7 @@
   };
   const CLASS_SERVER_OPTIONS = [
     { label: 'Localhost (3000)', url: 'http://localhost:3000' },
+    { label: 'Team 0x03 (Render)', url: 'https://finalproject3750.onrender.com' },
   ];
 
   const apiService = (() => {
@@ -101,7 +102,7 @@
     if (/has not started/i.test(msg)) return 'Game is waiting for players to finish setup.';
     if (/already placed ships/i.test(msg)) return 'Your ships are already submitted. Waiting for other players.';
     if (/joined or placed/i.test(msg)) return 'Waiting for all players to join and place ships.';
-    if (/Exactly 9 ship cells required/i.test(msg)) return 'Place all 3 ships (lengths 4, 3, 2) before submitting.';
+    if (/Exactly 3 ships required/i.test(msg)) return 'Place all 3 ships (lengths 4, 3, 2) before submitting.';
     if (/not in this game/i.test(msg)) return 'You are not part of this game.';
     return msg || 'Something went wrong. Try again.';
   }
@@ -204,6 +205,10 @@
         const joinBtn = document.createElement('button');
         joinBtn.className = 'btn-radar';
         joinBtn.textContent = 'JOIN';
+        if (g.player_count >= g.max_players) {
+          joinBtn.disabled = true;
+          joinBtn.textContent = 'FULL';
+        }
         joinBtn.addEventListener('click', async () => {
           try {
             await apiService.post(`/api/games/${g.id}/join`, { player_id: state.playerId });
@@ -286,16 +291,35 @@
     paintGrid(ui.yourGrid, state.gridSize, myShipSet, incomingHits, incomingMisses, canPlaceShips, onPlaceCellClick);
 
     ui.opponentGrids.innerHTML = '';
+    const myMoves = state.moves.filter((m) => m.player_id === state.playerId);
     for (const pid of state.participants) {
       if (pid === state.playerId) continue;
       const block = document.createElement('div');
       block.className = 'opponent-block';
       const label = document.createElement('h4');
-      label.textContent = state.playersById[pid] || `Player ${pid}`;
+      const participant = game.players.find((p) => p.player_id === pid);
+      const shipsRemaining = participant ? participant.ships_remaining : null;
+      const eliminated = shipsRemaining === 0 && game.status !== 'waiting_setup';
+      label.textContent = `${state.playersById[pid] || `Player ${pid}`}${eliminated ? ' (ELIMINATED)' : ''}`;
       const grid = document.createElement('div');
       grid.className = 'radar-grid';
-      const marks = getMoveCellsForPlayer(state.playerId);
-      paintGrid(grid, state.gridSize, new Set(), marks.hits, marks.misses, isMyTurn && game.status === 'playing', (r, c) => onFire(pid, r, c));
+      // Server move payload does not include target player, so for >2 players
+      // we can only render your aggregate outgoing marks on each opponent board.
+      const marks = { hits: new Set(), misses: new Set() };
+      for (const m of myMoves) {
+        const coord = key(m.row, m.col);
+        if (m.result === 'hit') marks.hits.add(coord);
+        if (m.result === 'miss') marks.misses.add(coord);
+      }
+      paintGrid(
+        grid,
+        state.gridSize,
+        new Set(),
+        marks.hits,
+        marks.misses,
+        isMyTurn && game.status === 'playing' && !eliminated,
+        (r, c) => onFire(pid, r, c)
+      );
       block.appendChild(label);
       block.appendChild(grid);
       ui.opponentGrids.appendChild(block);
@@ -345,7 +369,7 @@
       setStatus('Place all 3 ships before submitting.');
       return;
     }
-    const ships = state.localShips.flat().map((s) => [s.row, s.col]);
+    const ships = state.localShips.map((ship) => ship.map((s) => [s.row, s.col]));
     try {
       try {
         await apiService.post(`/api/games/${state.currentGameId}/ships`, { player_id: state.playerId, ships });
@@ -421,9 +445,12 @@
       if (savedUsername) ui.usernameInput.value = savedUsername;
       const savedId = localStorage.getItem(STORAGE_KEYS.playerId);
       if (savedId) {
-        state.playerId = parseInt(savedId, 10);
-        state.username = savedUsername;
-        ui.identityLine.textContent = `Saved identity: ${state.username || 'Unknown'} (#${state.playerId})`;
+        const parsedId = parseInt(savedId, 10);
+        if (!isNaN(parsedId)) {
+          state.playerId = parsedId;
+          state.username = savedUsername;
+          ui.identityLine.textContent = `Saved identity: ${state.username || 'Unknown'} (#${state.playerId})`;
+        }
       }
       await refreshPlayersDirectory();
     } catch (_) {
@@ -486,7 +513,11 @@
       ui.serverSelect.appendChild(el);
     }
     const stored = localStorage.getItem(STORAGE_KEYS.baseUrl);
-    if (stored) ui.serverInput.value = stored;
+    if (stored) {
+      ui.serverInput.value = stored;
+    } else if (ui.serverSelect.options.length > 0) {
+      ui.serverInput.value = ui.serverSelect.options[0].value;
+    }
   }
 
   function bindEvents() {
@@ -507,5 +538,5 @@
 
   initServerOptions();
   bindEvents();
-  showScreen('register');
+  showScreen('none');
 })();

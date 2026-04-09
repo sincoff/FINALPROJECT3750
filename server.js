@@ -51,8 +51,6 @@ function isValidId(s) {
   return !isNaN(n) && n >= 1;
 }
 
-const REQUIRED_SHIP_LENGTHS = [4, 3, 2];
-
 function normalizeAndValidateShips(ships, gridSize) {
   if (!Array.isArray(ships)) {
     return { error: 'ships must be an array' };
@@ -76,7 +74,6 @@ function normalizeAndValidateShips(ships, gridSize) {
 
   const occupied = new Set();
   const normalizedShips = [];
-  const observedLengths = [];
 
   for (const rawShip of ships) {
     let cells = [];
@@ -132,13 +129,6 @@ function normalizeAndValidateShips(ships, gridSize) {
     }
 
     normalizedShips.push(cells);
-    observedLengths.push(cells.length);
-  }
-
-  const expected = [...REQUIRED_SHIP_LENGTHS].sort((a, b) => a - b);
-  const actual = [...observedLengths].sort((a, b) => a - b);
-  if (expected.length !== actual.length || expected.some((v, i) => v !== actual[i])) {
-    return { error: 'Ships must be lengths 4, 3, and 2' };
   }
 
   return { coords: normalizedShips.flat() };

@@ -674,6 +674,18 @@ app.post('/api/games/:id/place', async (req, res) => {
       return res.status(400).json(E.badRequest(placement.error));
     }
     if (gpResult.rows[0].ships_placed) {
+      const existingShipsRes = await pool.query(
+        'SELECT ship_row, ship_col FROM ships WHERE game_id = $1 AND player_id = $2',
+        [gameId, pid]
+      );
+      const existingSet = new Set(existingShipsRes.rows.map((s) => `${s.ship_row},${s.ship_col}`));
+      const incomingSet = new Set(coords.map((s) => `${s.row},${s.col}`));
+      const samePlacement =
+        existingSet.size === incomingSet.size &&
+        [...existingSet].every((k) => incomingSet.has(k));
+      if (samePlacement) {
+        return res.status(200).json({ status: 'placed' });
+      }
       return res.status(409).json(E.conflict('Ships already placed for this player'));
     }
     const coords = placement.coords;
@@ -745,6 +757,18 @@ app.post('/api/games/:id/ships', async (req, res) => {
       return res.status(400).json(E.badRequest(placement.error));
     }
     if (gpResult.rows[0].ships_placed) {
+      const existingShipsRes = await pool.query(
+        'SELECT ship_row, ship_col FROM ships WHERE game_id = $1 AND player_id = $2',
+        [gameId, pid]
+      );
+      const existingSet = new Set(existingShipsRes.rows.map((s) => `${s.ship_row},${s.ship_col}`));
+      const incomingSet = new Set(coords.map((s) => `${s.row},${s.col}`));
+      const samePlacement =
+        existingSet.size === incomingSet.size &&
+        [...existingSet].every((k) => incomingSet.has(k));
+      if (samePlacement) {
+        return res.status(200).json({ status: 'placed' });
+      }
       return res.status(409).json(E.conflict('Ships already placed for this player'));
     }
     const coords = placement.coords;
@@ -941,6 +965,20 @@ app.post('/api/games/:id/fire', async (req, res) => {
       return res.status(403).json(E.forbidden('Player not in this game'));
     }
 
+    const coordBoundsOk = r >= 0 && r < game.grid_size && c >= 0 && c < game.grid_size;
+    if (!coordBoundsOk) {
+      return res.status(400).json(E.badRequest('Coordinates out of bounds'));
+    }
+
+    // Pool-compat: duplicate cell targeting is rejected regardless of shooter/turn.
+    const globalDup = await pool.query(
+      'SELECT 1 FROM moves WHERE game_id = $1 AND move_row = $2 AND move_col = $3 LIMIT 1',
+      [gameId, r, c]
+    );
+    if (globalDup.rows.length > 0) {
+      return res.status(409).json(E.conflict('Cell already fired upon'));
+    }
+
     const activePlayers = await pool.query(
       'SELECT player_id FROM game_players WHERE game_id = $1 AND is_eliminated = FALSE ORDER BY turn_order ASC',
       [gameId]
@@ -955,11 +993,6 @@ app.post('/api/games/:id/fire', async (req, res) => {
 
     if (expectedTurnPlayerId !== pid) {
       return res.status(403).json(E.forbidden('Not your turn'));
-    }
-
-    const coordBoundsOk = r >= 0 && r < game.grid_size && c >= 0 && c < game.grid_size;
-    if (!coordBoundsOk) {
-      return res.status(400).json(E.badRequest('Coordinates out of bounds'));
     }
 
     const allPlacedResult = await pool.query(
@@ -984,23 +1017,6 @@ app.post('/api/games/:id/fire', async (req, res) => {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-
-      const dupCheck = await client.query(
-        `SELECT 1
-         FROM moves
-         WHERE game_id = $1
-           AND player_id = $2
-           AND move_row = $3
-           AND move_col = $4
-         LIMIT 1`,
-        [gameId, pid, r, c]
-      );
-
-      if (dupCheck.rows.length > 0) {
-        const err = new Error('Cell already fired upon');
-        err.status = 409;
-        throw err;
-      }
 
       const targetRes = await client.query(
         `SELECT gp.player_id

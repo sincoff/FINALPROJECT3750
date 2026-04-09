@@ -138,14 +138,7 @@ async function initDatabase() {
   const client = await pool.connect();
   try {
     await client.query(`
-      DROP TABLE IF EXISTS moves CASCADE;
-      DROP TABLE IF EXISTS ships CASCADE;
-      DROP TABLE IF EXISTS game_players CASCADE;
-      DROP TABLE IF EXISTS games CASCADE;
-      DROP TABLE IF EXISTS players CASCADE;
-    `);
-    await client.query(`
-      CREATE TABLE players (
+      CREATE TABLE IF NOT EXISTS players (
         player_id SERIAL PRIMARY KEY,
         display_name TEXT UNIQUE NOT NULL,
         created_at TIMESTAMP DEFAULT NOW(),
@@ -155,7 +148,7 @@ async function initDatabase() {
         total_moves INTEGER DEFAULT 0
       );
 
-      CREATE TABLE games (
+      CREATE TABLE IF NOT EXISTS games (
         game_id SERIAL PRIMARY KEY,
         grid_size INTEGER NOT NULL,
         max_players INTEGER NOT NULL,
@@ -164,7 +157,7 @@ async function initDatabase() {
         created_at TIMESTAMP DEFAULT NOW()
       );
 
-      CREATE TABLE game_players (
+      CREATE TABLE IF NOT EXISTS game_players (
         game_id INTEGER REFERENCES games(game_id) ON DELETE CASCADE,
         player_id INTEGER REFERENCES players(player_id) ON DELETE CASCADE,
         turn_order INTEGER NOT NULL,
@@ -173,7 +166,7 @@ async function initDatabase() {
         PRIMARY KEY (game_id, player_id)
       );
 
-      CREATE TABLE ships (
+      CREATE TABLE IF NOT EXISTS ships (
         id SERIAL PRIMARY KEY,
         game_id INTEGER REFERENCES games(game_id) ON DELETE CASCADE,
         player_id INTEGER REFERENCES players(player_id) ON DELETE CASCADE,
@@ -181,7 +174,7 @@ async function initDatabase() {
         ship_col INTEGER NOT NULL
       );
 
-      CREATE TABLE moves (
+      CREATE TABLE IF NOT EXISTS moves (
         id SERIAL PRIMARY KEY,
         game_id INTEGER REFERENCES games(game_id) ON DELETE CASCADE,
         player_id INTEGER REFERENCES players(player_id) ON DELETE CASCADE,
@@ -483,20 +476,27 @@ app.post('/api/games/:id/join', async (req, res) => {
     if (playerCheck.rows.length === 0) {
       return res.status(404).json(E.notFound('Player does not exist'));
     }
-    const existingJoin = await pool.query(
-      'SELECT 1 FROM game_players WHERE game_id = $1 AND player_id = $2',
-      [gameId, pid]
-    );
-    if (existingJoin.rows.length > 0) {
-      return res.status(200).json({ status: 'joined' });
-    }
     const countResult = await pool.query(
       'SELECT COUNT(*)::int AS cnt FROM game_players WHERE game_id = $1',
       [gameId]
     );
     const currentCount = countResult.rows[0].cnt;
     if (currentCount >= game.max_players) {
+      const existingJoin = await pool.query(
+        'SELECT 1 FROM game_players WHERE game_id = $1 AND player_id = $2',
+        [gameId, pid]
+      );
+      if (existingJoin.rows.length > 0) {
+        return res.status(200).json({ status: 'joined' });
+      }
       return res.status(409).json(E.conflict('Game is full'));
+    }
+    const existingJoin = await pool.query(
+      'SELECT 1 FROM game_players WHERE game_id = $1 AND player_id = $2',
+      [gameId, pid]
+    );
+    if (existingJoin.rows.length > 0) {
+      return res.status(200).json({ status: 'joined' });
     }
     await pool.query(
       'INSERT INTO game_players (game_id, player_id, turn_order) VALUES ($1, $2, $3)',
@@ -635,11 +635,6 @@ app.post('/api/games/:id/place', async (req, res) => {
       return res.status(400).json(E.badRequest('Invalid player_id'));
     }
 
-    const playerExists = await pool.query('SELECT 1 FROM players WHERE player_id = $1', [pid]);
-    if (playerExists.rows.length === 0) {
-      return res.status(400).json(E.badRequest('Player does not exist'));
-    }
-
     const gameResult = await pool.query(
       'SELECT * FROM games WHERE game_id = $1',
       [gameId]
@@ -651,6 +646,10 @@ app.post('/api/games/:id/place', async (req, res) => {
     if (game.status !== 'waiting_setup') {
       return res.status(400).json(E.badRequest('Game is not in setup phase'));
     }
+    const playerExists = await pool.query('SELECT 1 FROM players WHERE player_id = $1', [pid]);
+    if (playerExists.rows.length === 0) {
+      return res.status(400).json(E.badRequest('Player does not exist'));
+    }
 
     const gpResult = await pool.query(
       'SELECT ships_placed FROM game_players WHERE game_id = $1 AND player_id = $2',
@@ -659,13 +658,12 @@ app.post('/api/games/:id/place', async (req, res) => {
     if (gpResult.rows.length === 0) {
       return res.status(400).json(E.badRequest('Player is not in this game'));
     }
-    if (gpResult.rows[0].ships_placed) {
-      return res.status(409).json(E.conflict('Ships already placed for this player'));
-    }
-
     const placement = normalizeAndValidateShips(ships, game.grid_size);
     if (placement.error) {
       return res.status(400).json(E.badRequest(placement.error));
+    }
+    if (gpResult.rows[0].ships_placed) {
+      return res.status(409).json(E.conflict('Ships already placed for this player'));
     }
     const coords = placement.coords;
 
@@ -706,11 +704,6 @@ app.post('/api/games/:id/ships', async (req, res) => {
       return res.status(400).json(E.badRequest('Invalid player_id'));
     }
 
-    const playerExists = await pool.query('SELECT 1 FROM players WHERE player_id = $1', [pid]);
-    if (playerExists.rows.length === 0) {
-      return res.status(400).json(E.badRequest('Player does not exist'));
-    }
-
     const gameResult = await pool.query(
       'SELECT * FROM games WHERE game_id = $1',
       [gameId]
@@ -722,6 +715,10 @@ app.post('/api/games/:id/ships', async (req, res) => {
     if (game.status !== 'waiting_setup') {
       return res.status(400).json(E.badRequest('Game is not in setup phase'));
     }
+    const playerExists = await pool.query('SELECT 1 FROM players WHERE player_id = $1', [pid]);
+    if (playerExists.rows.length === 0) {
+      return res.status(400).json(E.badRequest('Player does not exist'));
+    }
 
     const gpResult = await pool.query(
       'SELECT ships_placed FROM game_players WHERE game_id = $1 AND player_id = $2',
@@ -730,13 +727,12 @@ app.post('/api/games/:id/ships', async (req, res) => {
     if (gpResult.rows.length === 0) {
       return res.status(400).json(E.badRequest('Player is not in this game'));
     }
-    if (gpResult.rows[0].ships_placed) {
-      return res.status(409).json(E.conflict('Ships already placed for this player'));
-    }
-
     const placement = normalizeAndValidateShips(ships, game.grid_size);
     if (placement.error) {
       return res.status(400).json(E.badRequest(placement.error));
+    }
+    if (gpResult.rows[0].ships_placed) {
+      return res.status(409).json(E.conflict('Ships already placed for this player'));
     }
     const coords = placement.coords;
 
@@ -1182,6 +1178,8 @@ app.get('/api/games/:id/moves', async (req, res) => {
 
 // POST /api/test/games/:id/restart
 app.post('/api/test/games/:id/restart', async (req, res) => {
+  if (TEST_MODE !== 'true') return res.status(403).json(E.forbidden('Test mode disabled'));
+  if (req.headers['x-test-password'] !== 'clemson-test-2026') return res.status(403).json(E.forbidden('Invalid or missing test password'));
   try {
     const { id } = req.params;
     if (!isValidId(id)) return res.status(404).json(E.notFound('Game not found'));
@@ -1210,6 +1208,8 @@ app.post('/api/test/games/:id/restart', async (req, res) => {
 // POST /api/test/games/:id/ships
 // Test-only deterministic ship placement (allows override).
 app.post('/api/test/games/:id/ships', async (req, res) => {
+  if (TEST_MODE !== 'true') return res.status(403).json(E.forbidden('Test mode disabled'));
+  if (req.headers['x-test-password'] !== 'clemson-test-2026') return res.status(403).json(E.forbidden('Invalid or missing test password'));
   try {
     const { id } = req.params;
     if (!isValidId(id)) return res.status(404).json(E.notFound('Game not found'));
@@ -1283,6 +1283,8 @@ app.post('/api/test/games/:id/ships', async (req, res) => {
 
 // GET /api/test/games/:id/board/:player_id
 app.get('/api/test/games/:id/board/:player_id', async (req, res) => {
+  if (TEST_MODE !== 'true') return res.status(403).json(E.forbidden('Test mode disabled'));
+  if (req.headers['x-test-password'] !== 'clemson-test-2026') return res.status(403).json(E.forbidden('Invalid or missing test password'));
   try {
     const { id, player_id } = req.params;
     if (!isValidId(id)) return res.status(404).json(E.notFound('Game not found'));

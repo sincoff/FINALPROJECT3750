@@ -241,6 +241,7 @@ app.get('/api/health', (req, res) => {
 
 // Test mode middleware
 app.use('/api/test', (req, res, next) => {
+  console.log(`[test-middleware] ${req.method} ${req.originalUrl}`);
   if (TEST_MODE !== 'true') {
     return res.status(403).json(E.forbidden('Test mode disabled'));
   }
@@ -472,7 +473,7 @@ app.post('/api/games/:id/join', async (req, res) => {
     }
     const pid = typeof player_id === 'number' ? player_id : parseInt(player_id, 10);
     if (isNaN(pid) || pid < 1) {
-      return res.status(400).json(E.badRequest('Player does not exist'));
+      return res.status(404).json(E.notFound('Player does not exist'));
     }
     const gameResult = await pool.query(
       'SELECT * FROM games WHERE game_id = $1',
@@ -483,21 +484,21 @@ app.post('/api/games/:id/join', async (req, res) => {
     }
     const game = gameResult.rows[0];
     if (game.status !== 'waiting_setup') {
-      return res.status(400).json(E.badRequest('Game is not accepting joins'));
+      return res.status(409).json(E.conflict('Game already started'));
     }
     const playerCheck = await pool.query(
       'SELECT player_id FROM players WHERE player_id = $1',
       [pid]
     );
     if (playerCheck.rows.length === 0) {
-      return res.status(400).json(E.badRequest('Player does not exist'));
+      return res.status(404).json(E.notFound('Player does not exist'));
     }
     const existingJoin = await pool.query(
       'SELECT 1 FROM game_players WHERE game_id = $1 AND player_id = $2',
       [gameId, pid]
     );
     if (existingJoin.rows.length > 0) {
-      return res.status(400).json(E.badRequest('Player already in this game'));
+      return res.status(200).json({ status: 'joined' });
     }
     const countResult = await pool.query(
       'SELECT COUNT(*)::int AS cnt FROM game_players WHERE game_id = $1',
@@ -505,7 +506,7 @@ app.post('/api/games/:id/join', async (req, res) => {
     );
     const currentCount = countResult.rows[0].cnt;
     if (currentCount >= game.max_players) {
-      return res.status(400).json(E.badRequest('Game is full'));
+      return res.status(409).json(E.conflict('Game is full'));
     }
     await pool.query(
       'INSERT INTO game_players (game_id, player_id, turn_order) VALUES ($1, $2, $3)',
@@ -669,7 +670,7 @@ app.post('/api/games/:id/place', async (req, res) => {
       return res.status(400).json(E.badRequest('Player is not in this game'));
     }
     if (gpResult.rows[0].ships_placed) {
-      return res.status(400).json(E.badRequest('Player has already placed ships'));
+      return res.status(409).json(E.conflict('Ships already placed for this player'));
     }
 
     const placement = normalizeAndValidateShips(ships, game.grid_size);
@@ -740,7 +741,7 @@ app.post('/api/games/:id/ships', async (req, res) => {
       return res.status(400).json(E.badRequest('Player is not in this game'));
     }
     if (gpResult.rows[0].ships_placed) {
-      return res.status(400).json(E.badRequest('Player has already placed ships'));
+      return res.status(409).json(E.conflict('Ships already placed for this player'));
     }
 
     const placement = normalizeAndValidateShips(ships, game.grid_size);
@@ -982,6 +983,23 @@ app.post('/api/games/:id/fire', async (req, res) => {
     try {
       await client.query('BEGIN');
 
+      const dupCheck = await client.query(
+        `SELECT 1
+         FROM moves
+         WHERE game_id = $1
+           AND player_id = $2
+           AND move_row = $3
+           AND move_col = $4
+         LIMIT 1`,
+        [gameId, pid, r, c]
+      );
+
+      if (dupCheck.rows.length > 0) {
+        const err = new Error('Cell already fired upon');
+        err.status = 409;
+        throw err;
+      }
+
       const targetRes = await client.query(
         `SELECT gp.player_id
          FROM game_players gp
@@ -1000,24 +1018,6 @@ app.post('/api/games/:id/fire', async (req, res) => {
 
       const targetPlayerId = targetRes.rows.length > 0 ? targetRes.rows[0].player_id : null;
       const result = targetPlayerId ? 'hit' : 'miss';
-
-      const dupCheck = await client.query(
-        `SELECT 1
-         FROM moves
-         WHERE game_id = $1
-           AND player_id = $2
-           AND move_row = $3
-           AND move_col = $4
-           AND target_player_id IS NOT DISTINCT FROM $5
-         LIMIT 1`,
-        [gameId, pid, r, c, targetPlayerId]
-      );
-
-      if (dupCheck.rows.length > 0) {
-        const err = new Error('Cell already fired upon');
-        err.status = 409;
-        throw err;
-      }
 
       await client.query(
         `INSERT INTO moves (game_id, player_id, target_player_id, move_row, move_col, result, created_at)

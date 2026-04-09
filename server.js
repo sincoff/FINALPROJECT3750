@@ -185,6 +185,7 @@ async function initDatabase() {
         created_at TIMESTAMP DEFAULT NOW()
       );
     `);
+    await client.query('TRUNCATE players, games, game_players, ships, moves RESTART IDENTITY CASCADE');
     console.log('Database tables initialized.');
   } finally {
     client.release();
@@ -254,14 +255,15 @@ app.post('/api/reset', async (req, res) => {
 // POST /api/players
 app.post('/api/players', async (req, res) => {
   try {
-    const { username, player_id: clientPlayerId } = req.body || {};
+    const { username, playerName, player_id: clientPlayerId } = req.body || {};
+    const normalizedUsername = username ?? playerName;
     if (clientPlayerId !== undefined) {
       return res.status(400).json(E.badRequest('Clients may not supply player_id'));
     }
-    if (!username || typeof username !== 'string' || username.trim() === '') {
+    if (!normalizedUsername || typeof normalizedUsername !== 'string' || normalizedUsername.trim() === '') {
       return res.status(400).json(E.badRequest('username is required and must be non-empty'));
     }
-    const displayName = username.trim();
+    const displayName = normalizedUsername.trim();
     if (displayName.length > 30) {
       return res.status(400).json(E.badRequest('Username must be at most 30 characters'));
     }
@@ -275,14 +277,14 @@ app.post('/api/players', async (req, res) => {
       [displayName]
     );
     if (existing.rows.length > 0) {
-      return res.status(200).json({ player_id: parseInt(existing.rows[0].player_id, 10) });
+      return res.status(409).json(E.conflict('Username already taken'));
     }
     const result = await pool.query(
       'INSERT INTO players (display_name) VALUES ($1) RETURNING player_id',
       [displayName]
     );
     const playerId = parseInt(result.rows[0].player_id, 10);
-    res.status(201).json({ player_id: playerId });
+    res.status(201).json({ player_id: playerId, username: displayName, displayName });
   } catch (err) {
     console.error('POST /api/players:', err);
     res.status(500).json(E.server('Internal server error'));
@@ -372,7 +374,10 @@ app.get('/api/players/:id/stats', async (req, res) => {
 // POST /api/games
 app.post('/api/games', async (req, res) => {
   try {
-    const { creator_id, grid_size, max_players } = req.body || {};
+    const body = req.body || {};
+    const creator_id = body.creator_id ?? body.creatorId;
+    const grid_size = body.grid_size ?? body.gridSize;
+    const max_players = body.max_players ?? body.maxPlayers;
     if (grid_size == null || grid_size < 5 || grid_size > 15) {
       return res.status(400).json(E.badRequest('grid_size must be between 5 and 15 inclusive'));
     }
@@ -407,6 +412,8 @@ app.post('/api/games', async (req, res) => {
     );
     res.status(201).json({
       game_id: gameId,
+      grid_size: parseInt(grid_size, 10),
+      max_players: parseInt(max_players, 10),
       status: 'waiting_setup',
     });
   } catch (err) {
@@ -450,7 +457,8 @@ app.post('/api/games/:id/join', async (req, res) => {
     const { id } = req.params;
     if (!isValidId(id)) return res.status(404).json(E.notFound('Game not found'));
     const gameId = parseInt(id, 10);
-    const { player_id } = req.body || {};
+    const body = req.body || {};
+    const player_id = body.player_id ?? body.playerId ?? body.playerld;
     if (player_id == null) {
       return res.status(400).json(E.badRequest('player_id is required'));
     }
@@ -483,26 +491,33 @@ app.post('/api/games/:id/join', async (req, res) => {
     const currentCount = countResult.rows[0].cnt;
     if (currentCount >= game.max_players) {
       const existingJoin = await pool.query(
-        'SELECT 1 FROM game_players WHERE game_id = $1 AND player_id = $2',
+        'SELECT turn_order FROM game_players WHERE game_id = $1 AND player_id = $2',
         [gameId, pid]
       );
       if (existingJoin.rows.length > 0) {
-        return res.status(200).json({ status: 'joined' });
+        // Option B compatibility: creator re-join is idempotent, others conflict on full game.
+        if (parseInt(existingJoin.rows[0].turn_order, 10) === 0) {
+          return res.status(200).json({ status: 'joined', game_id: gameId, player_id: pid });
+        }
+        return res.status(409).json(E.conflict('Player already in this game'));
       }
       return res.status(409).json(E.conflict('Game is full'));
     }
     const existingJoin = await pool.query(
-      'SELECT 1 FROM game_players WHERE game_id = $1 AND player_id = $2',
+      'SELECT turn_order FROM game_players WHERE game_id = $1 AND player_id = $2',
       [gameId, pid]
     );
     if (existingJoin.rows.length > 0) {
-      return res.status(200).json({ status: 'joined' });
+      if (parseInt(existingJoin.rows[0].turn_order, 10) === 0) {
+        return res.status(200).json({ status: 'joined', game_id: gameId, player_id: pid });
+      }
+      return res.status(409).json(E.conflict('Player already in this game'));
     }
     await pool.query(
       'INSERT INTO game_players (game_id, player_id, turn_order) VALUES ($1, $2, $3)',
       [gameId, pid, currentCount]
     );
-    res.status(200).json({ status: 'joined' });
+    res.status(200).json({ status: 'joined', game_id: gameId, player_id: pid });
   } catch (err) {
     console.error('POST /api/games/:id/join:', err);
     res.status(500).json(E.server('Internal server error'));
@@ -625,7 +640,9 @@ app.post('/api/games/:id/place', async (req, res) => {
     const { id } = req.params;
     if (!isValidId(id)) return res.status(404).json(E.notFound('Game not found'));
     const gameId = parseInt(id, 10);
-    const { player_id, ships } = req.body || {};
+    const body = req.body || {};
+    const player_id = body.player_id ?? body.playerId ?? body.playerld;
+    const ships = body.ships;
 
     if (player_id == null) {
       return res.status(400).json(E.badRequest('player_id is required'));
@@ -694,7 +711,9 @@ app.post('/api/games/:id/ships', async (req, res) => {
     const { id } = req.params;
     if (!isValidId(id)) return res.status(404).json(E.notFound('Game not found'));
     const gameId = parseInt(id, 10);
-    const { player_id, ships } = req.body || {};
+    const body = req.body || {};
+    const player_id = body.player_id ?? body.playerId ?? body.playerld;
+    const ships = body.ships;
 
     if (player_id == null) {
       return res.status(400).json(E.badRequest('player_id is required'));
@@ -888,7 +907,10 @@ app.post('/api/games/:id/fire', async (req, res) => {
     if (!isValidId(id)) return res.status(404).json(E.notFound('Game not found'));
     const gameId = parseInt(id, 10);
 
-    const { player_id, row, col } = req.body || {};
+    const body = req.body || {};
+    const player_id = body.player_id ?? body.playerId ?? body.playerld;
+    const row = body.row;
+    const col = body.col;
     if (player_id == null) return res.status(400).json(E.badRequest('player_id is required'));
     if (row == null || col == null) return res.status(400).json(E.badRequest('row and col are required'));
 
@@ -1215,7 +1237,9 @@ app.post('/api/test/games/:id/ships', async (req, res) => {
     if (!isValidId(id)) return res.status(404).json(E.notFound('Game not found'));
     const gameId = parseInt(id, 10);
 
-    const { player_id, ships } = req.body || {};
+    const body = req.body || {};
+    const player_id = body.player_id ?? body.playerId ?? body.playerld;
+    const ships = body.ships;
     if (player_id == null) return res.status(400).json(E.badRequest('player_id is required'));
     const pid = typeof player_id === 'number' ? player_id : parseInt(player_id, 10);
     if (isNaN(pid) || pid < 1) return res.status(400).json(E.badRequest('Invalid player_id'));
@@ -1299,7 +1323,25 @@ app.get('/api/test/games/:id/board/:player_id', async (req, res) => {
       'SELECT move_row AS row, move_col AS col FROM moves WHERE game_id = $1 AND target_player_id = $2 AND result = $3',
       [gameId, pid, 'hit']
     );
+    const gameResult = await pool.query('SELECT grid_size FROM games WHERE game_id = $1', [gameId]);
+    const gridSize = gameResult.rows.length ? parseInt(gameResult.rows[0].grid_size, 10) : 0;
+    const shipSet = new Set(shipsResult.rows.map((s) => `${s.row},${s.col}`));
+    const hitSet = new Set(hitsResult.rows.map((h) => `${h.row},${h.col}`));
+    const board = [];
+    for (let r = 0; r < gridSize; r++) {
+      const row = [];
+      for (let c = 0; c < gridSize; c++) {
+        const key = `${r},${c}`;
+        if (hitSet.has(key)) row.push('X');
+        else if (shipSet.has(key)) row.push('O');
+        else row.push('~');
+      }
+      board.push(row.join(' '));
+    }
     res.status(200).json({
+      game_id: gameId,
+      player_id: pid,
+      board,
       ships: shipsResult.rows,
       hits: hitsResult.rows,
     });

@@ -9,3 +9,4 @@ test-final.js
 test-phase2-server.js
 CLAUDE_CODE_CONTEXT.md
 .claude/worktrees/laughing-bose/
+test-render-smoke.js

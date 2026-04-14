@@ -932,23 +932,6 @@ async function handleFire(req, res, overrideGameId = null) {
     }
     const game = gameResult.rows[0];
 
-    if (game.status === 'finished') {
-      return res.status(400).json(E.badRequest('Game is already finished'));
-    }
-
-    const playerExists = await pool.query('SELECT 1 FROM players WHERE player_id = $1', [pid]);
-    if (playerExists.rows.length === 0) {
-      return res.status(403).json(E.forbidden('Invalid player'));
-    }
-
-    const playerInGame = await pool.query(
-      'SELECT 1 FROM game_players WHERE game_id = $1 AND player_id = $2',
-      [gameId, pid]
-    );
-    if (playerInGame.rows.length === 0) {
-      return res.status(403).json(E.forbidden('Player not in this game'));
-    }
-
     const coordBoundsOk = r >= 0 && r < game.grid_size && c >= 0 && c < game.grid_size;
     if (!coordBoundsOk) {
       return res.status(400).json(E.badRequest('Coordinates out of bounds'));
@@ -965,6 +948,23 @@ async function handleFire(req, res, overrideGameId = null) {
     );
     if (dupGlobalCheck.rows.length > 0) {
       return res.status(409).json(E.conflict('Cell already fired upon'));
+    }
+
+    if (game.status === 'finished') {
+      return res.status(400).json(E.badRequest('Game is already finished'));
+    }
+
+    const playerExists = await pool.query('SELECT 1 FROM players WHERE player_id = $1', [pid]);
+    if (playerExists.rows.length === 0) {
+      return res.status(403).json(E.forbidden('Invalid player'));
+    }
+
+    const playerInGame = await pool.query(
+      'SELECT 1 FROM game_players WHERE game_id = $1 AND player_id = $2',
+      [gameId, pid]
+    );
+    if (playerInGame.rows.length === 0) {
+      return res.status(403).json(E.forbidden('Player not in this game'));
     }
 
     const activePlayers = await pool.query(

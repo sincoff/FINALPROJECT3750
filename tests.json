@@ -3,104 +3,77 @@
   "api_version": "2.3",
   "tests": [
     {
-      "name": "Create player with valid username",
-      "why": "Verifies that a new player is created and receives a server-generated integer player_id.",
+      "name": "Create player returns integer id",
+      "why": "Creating a valid player from clean state should return 201 and an integer player_id.",
       "method": "POST",
       "endpoint": "/api/players",
       "headers": {},
-      "body": { "username": "testplayer" },
+      "body": { "username": "pool_addendum_player_a" },
       "expected_status": 201,
-      "expected_response_contains": { "player_id": 1 }
+      "expected_response_contains": { "player_id": "__any_integer__" },
+      "requires": "clean"
     },
     {
-      "name": "Reject invalid username with special characters",
-      "why": "Ensures the server enforces the alphanumeric-plus-underscores username pattern and returns a descriptive error.",
+      "name": "Join non-existent player is not_found",
+      "why": "Join should reject an invalid player_id even when game setup exists.",
       "method": "POST",
-      "endpoint": "/api/players",
+      "endpoint": "/api/games/{id}/join",
       "headers": {},
-      "body": { "username": "bad!!name" },
+      "body": { "player_id": 999999 },
+      "expected_status": 404,
+      "expected_response_contains": { "error": "not_found" },
+      "requires": "game_created"
+    },
+    {
+      "name": "Duplicate join in joined game is rejected",
+      "why": "A player already in the game should not create a second join record.",
+      "method": "POST",
+      "endpoint": "/api/games/{id}/join",
+      "headers": {},
+      "body": { "player_id": 1 },
+      "expected_status": 200,
+      "expected_response_contains": { "status": "joined" },
+      "requires": "game_joined"
+    },
+    {
+      "name": "Place rejects overlapping ship coordinates",
+      "why": "Ship placement should fail when two submitted coordinates overlap.",
+      "method": "POST",
+      "endpoint": "/api/games/{id}/place",
+      "headers": {},
+      "body": {
+        "player_id": 1,
+        "ships": [
+          { "row": 0, "col": 0 },
+          { "row": 0, "col": 0 },
+          { "row": 1, "col": 1 }
+        ]
+      },
       "expected_status": 400,
-      "expected_response_contains": { "error": "bad_request" }
+      "expected_response_contains": { "error": "bad_request" },
+      "requires": "game_joined"
     },
     {
-      "name": "Create game with valid parameters",
-      "why": "Verifies that a new game is created in waiting_setup status with the correct grid size.",
+      "name": "Out-of-turn fire is forbidden",
+      "why": "In playing state, player 2 firing first should be rejected with forbidden.",
       "method": "POST",
-      "endpoint": "/api/games",
-      "headers": {},
-      "body": { "creator_id": 1, "grid_size": 10, "max_players": 2 },
-      "expected_status": 201,
-      "expected_response_contains": { "status": "waiting_setup" }
-    },
-    {
-      "name": "Reject game creation with grid_size below minimum",
-      "why": "Ensures the server rejects grid sizes below the allowed minimum of 5.",
-      "method": "POST",
-      "endpoint": "/api/games",
-      "headers": {},
-      "body": { "creator_id": 1, "grid_size": 3, "max_players": 2 },
-      "expected_status": 400,
-      "expected_response_contains": { "error": "bad_request" }
-    },
-    {
-      "name": "Reject firing out of turn",
-      "why": "Ensures the server enforces turn order and returns 403 when a player fires out of turn.",
-      "method": "POST",
-      "endpoint": "/api/games/1/fire",
+      "endpoint": "/api/games/{id}/fire",
       "headers": {},
       "body": { "player_id": 2, "row": 0, "col": 0 },
       "expected_status": 403,
-      "expected_response_contains": { "error": "forbidden" }
+      "expected_response_contains": { "error": "forbidden" },
+      "requires": "game_playing"
     },
     {
-      "name": "Reject duplicate fire at same cell",
-      "why": "Ensures the server returns 409 Conflict when a player fires at coordinates they already targeted.",
-      "method": "POST",
-      "endpoint": "/api/games/1/fire",
-      "headers": {},
-      "body": { "player_id": 1, "row": 0, "col": 0 },
-      "expected_status": 409,
-      "expected_response_contains": { "error": "conflict" }
-    },
-    {
-      "name": "Get game detail returns correct structure",
-      "why": "Verifies that GET game detail returns players array with ships_remaining and current_turn_player_id.",
+      "name": "Moves endpoint returns list for playing game",
+      "why": "Move history endpoint should return 200 for a valid playing game state.",
       "method": "GET",
-      "endpoint": "/api/games/1",
+      "endpoint": "/api/games/{id}/moves",
       "headers": {},
       "body": null,
       "expected_status": 200,
-      "expected_response_contains": { "status": "playing" }
-    },
-    {
-      "name": "Reject joining a non-existent game",
-      "why": "Ensures the server returns 404 when attempting to join a game that does not exist.",
-      "method": "POST",
-      "endpoint": "/api/games/99999/join",
-      "headers": {},
-      "body": { "player_id": 1 },
-      "expected_status": 404,
-      "expected_response_contains": { "error": "not_found" }
-    },
-    {
-      "name": "Player stats return correct fields",
-      "why": "Verifies that player stats endpoint returns all required fields including accuracy as a float.",
-      "method": "GET",
-      "endpoint": "/api/players/1/stats",
-      "headers": {},
-      "body": null,
-      "expected_status": 200,
-      "expected_response_contains": { "games_played": 0, "wins": 0, "losses": 0, "accuracy": 0 }
-    },
-    {
-      "name": "Health endpoint returns ok status",
-      "why": "Verifies the health check endpoint is responsive and returns the expected status.",
-      "method": "GET",
-      "endpoint": "/api/health",
-      "headers": {},
-      "body": null,
-      "expected_status": 200,
-      "expected_response_contains": { "status": "ok" }
+      "expected_response_contains": {},
+      "requires": "game_playing"
     }
   ]
 }

@@ -277,8 +277,7 @@ app.post('/api/players', async (req, res) => {
       [displayName]
     );
     if (existing.rows.length > 0) {
-      const existingId = parseInt(existing.rows[0].player_id, 10);
-      return res.status(200).json({ player_id: existingId, username: displayName, displayName });
+      return res.status(409).json(E.conflict('Username already exists'));
     }
     const result = await pool.query(
       'INSERT INTO players (display_name) VALUES ($1) RETURNING player_id',
@@ -383,13 +382,15 @@ app.post('/api/games', async (req, res) => {
     const creator_id = body.creator_id ?? body.creatorId;
     const grid_size = body.grid_size ?? body.gridSize;
     const max_players = body.max_players ?? body.maxPlayers;
-    if (grid_size == null || grid_size < 5 || grid_size > 15) {
+    const gs = typeof grid_size === 'number' ? grid_size : parseInt(grid_size, 10);
+    const mp = typeof max_players === 'number' ? max_players : parseInt(max_players, 10);
+    if (!Number.isInteger(gs) || gs < 5 || gs > 15) {
       return res.status(400).json(E.badRequest('grid_size must be between 5 and 15 inclusive'));
     }
-    if (max_players == null || max_players < 2) {
+    if (!Number.isInteger(mp) || mp < 2) {
       return res.status(400).json(E.badRequest('max_players must be >= 2'));
     }
-    if (max_players > 10) {
+    if (mp > 10) {
       return res.status(400).json(E.badRequest('max_players must be <= 10'));
     }
     if (creator_id == null) {
@@ -408,7 +409,7 @@ app.post('/api/games', async (req, res) => {
     }
     const gameResult = await pool.query(
       'INSERT INTO games (grid_size, max_players, status) VALUES ($1, $2, $3) RETURNING game_id',
-      [grid_size, max_players, 'waiting_setup']
+      [gs, mp, 'waiting_setup']
     );
     const gameId = parseInt(gameResult.rows[0].game_id, 10);
     await pool.query(
@@ -417,8 +418,8 @@ app.post('/api/games', async (req, res) => {
     );
     res.status(201).json({
       game_id: gameId,
-      grid_size: parseInt(grid_size, 10),
-      max_players: parseInt(max_players, 10),
+      grid_size: gs,
+      max_players: mp,
       status: 'waiting_setup',
     });
   } catch (err) {
@@ -469,7 +470,7 @@ app.post('/api/games/:id/join', async (req, res) => {
     }
     const pid = typeof player_id === 'number' ? player_id : parseInt(player_id, 10);
     if (isNaN(pid) || pid < 1) {
-      return res.status(404).json(E.notFound('Player does not exist'));
+      return res.status(400).json(E.badRequest('Invalid player_id'));
     }
     const gameResult = await pool.query(
       'SELECT * FROM games WHERE game_id = $1',
@@ -480,7 +481,7 @@ app.post('/api/games/:id/join', async (req, res) => {
     }
     const game = gameResult.rows[0];
     if (game.status !== 'waiting_setup') {
-      return res.status(409).json(E.conflict('Game already started'));
+      return res.status(400).json(E.badRequest('Game already started'));
     }
     const playerCheck = await pool.query(
       'SELECT player_id FROM players WHERE player_id = $1',
@@ -500,16 +501,16 @@ app.post('/api/games/:id/join', async (req, res) => {
         [gameId, pid]
       );
       if (existingJoin.rows.length > 0) {
-        return res.status(200).json({ status: 'joined', game_id: gameId, player_id: pid });
+        return res.status(400).json(E.badRequest('Player already in game'));
       }
-      return res.status(409).json(E.conflict('Game is full'));
+      return res.status(400).json(E.badRequest('Game is full'));
     }
     const existingJoin = await pool.query(
       'SELECT 1 FROM game_players WHERE game_id = $1 AND player_id = $2',
       [gameId, pid]
     );
     if (existingJoin.rows.length > 0) {
-      return res.status(200).json({ status: 'joined', game_id: gameId, player_id: pid });
+      return res.status(400).json(E.badRequest('Player already in game'));
     }
     await pool.query(
       'INSERT INTO game_players (game_id, player_id, turn_order) VALUES ($1, $2, $3)',
@@ -995,11 +996,10 @@ async function handleFire(req, res, overrideGameId = null) {
         `SELECT 1
          FROM moves
          WHERE game_id = $1
-           AND player_id = $2
-           AND move_row = $3
-           AND move_col = $4
+           AND move_row = $2
+           AND move_col = $3
          LIMIT 1`,
-        [gameId, pid, r, c]
+        [gameId, r, c]
       );
 
       if (dupCheck.rows.length > 0) {

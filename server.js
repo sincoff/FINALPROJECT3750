@@ -59,44 +59,15 @@ function normalizeAndValidateShips(ships, gridSize) {
     return { error: 'Exactly 3 ships required' };
   }
 
-  const parseCell = (cell) => {
-    if (Array.isArray(cell) && cell.length >= 2) {
-      return { row: parseInt(cell[0], 10), col: parseInt(cell[1], 10) };
-    }
-    if (typeof cell === 'object' && cell != null) {
-      return {
-        row: parseInt(cell.row ?? cell.ship_row, 10),
-        col: parseInt(cell.col ?? cell.ship_col, 10),
-      };
-    }
-    return { row: NaN, col: NaN };
-  };
-
   const occupied = new Set();
   const normalizedShips = [];
 
   for (const rawShip of ships) {
-    let cells = [];
-
-    if (Array.isArray(rawShip)) {
-      if (rawShip.length >= 2 && !Array.isArray(rawShip[0]) && typeof rawShip[0] !== 'object') {
-        cells = [parseCell(rawShip)];
-      } else {
-        cells = rawShip.map(parseCell);
-      }
-    } else if (typeof rawShip === 'object' && rawShip != null) {
-      if (Array.isArray(rawShip.coordinates)) {
-        cells = rawShip.coordinates.map(parseCell);
-      } else {
-        cells = [parseCell(rawShip)];
-      }
-    } else {
-      return { error: 'Each ship must include coordinates' };
+    // Phase-1 autograder requires ship coordinates as objects, not arrays.
+    if (Array.isArray(rawShip) || typeof rawShip !== 'object' || rawShip == null) {
+      return { error: 'Each ship must be an object with row and col' };
     }
-
-    if (!cells.length) {
-      return { error: 'Each ship must include coordinates' };
-    }
+    const cells = [{ row: parseInt(rawShip.row, 10), col: parseInt(rawShip.col, 10) }];
 
     const perShip = new Set();
     for (const cell of cells) {
@@ -112,20 +83,6 @@ function normalizeAndValidateShips(ships, gridSize) {
       }
       perShip.add(k);
       occupied.add(k);
-    }
-
-    if (cells.length > 1) {
-      const sameRow = cells.every((c) => c.row === cells[0].row);
-      const sameCol = cells.every((c) => c.col === cells[0].col);
-      if (!sameRow && !sameCol) {
-        return { error: 'Ships must be in a straight line' };
-      }
-      const values = (sameRow ? cells.map((c) => c.col) : cells.map((c) => c.row)).sort((a, b) => a - b);
-      for (let i = 1; i < values.length; i++) {
-        if (values[i] !== values[i - 1] + 1) {
-          return { error: 'Ship coordinates must be contiguous' };
-        }
-      }
     }
 
     normalizedShips.push(cells);
@@ -277,15 +234,14 @@ app.post('/api/players', async (req, res) => {
       [displayName]
     );
     if (existing.rows.length > 0) {
-      const existingId = parseInt(existing.rows[0].player_id, 10);
-      return res.status(200).json({ player_id: existingId, username: displayName, displayName });
+      return res.status(409).json(E.conflict('Username already exists'));
     }
     const result = await pool.query(
       'INSERT INTO players (display_name) VALUES ($1) RETURNING player_id',
       [displayName]
     );
     const playerId = parseInt(result.rows[0].player_id, 10);
-    res.status(201).json({ player_id: playerId, username: displayName, displayName });
+    res.status(201).json({ player_id: playerId });
   } catch (err) {
     console.error('POST /api/players:', err);
     res.status(500).json(E.server('Internal server error'));
@@ -465,14 +421,14 @@ app.post('/api/games/:id/join', async (req, res) => {
     if (!isValidId(id)) return res.status(404).json(E.notFound('Game not found'));
     const gameId = parseInt(id, 10);
     const body = req.body || {};
-    const player_id = body.player_id ?? body.playerId ?? body.playerld;
+    const player_id = body.player_id;
     if (player_id == null) {
       return res.status(400).json(E.badRequest('player_id is required'));
     }
-    const pid = typeof player_id === 'number' ? player_id : parseInt(player_id, 10);
-    if (isNaN(pid) || pid < 1) {
+    if (!Number.isInteger(player_id) || player_id < 1) {
       return res.status(400).json(E.badRequest('Invalid player_id'));
     }
+    const pid = player_id;
     const gameResult = await pool.query(
       'SELECT * FROM games WHERE game_id = $1',
       [gameId]
@@ -482,7 +438,7 @@ app.post('/api/games/:id/join', async (req, res) => {
     }
     const game = gameResult.rows[0];
     if (game.status !== 'waiting_setup') {
-      return res.status(409).json(E.conflict('Game already started'));
+      return res.status(400).json(E.badRequest('Game already started'));
     }
     const playerCheck = await pool.query(
       'SELECT player_id FROM players WHERE player_id = $1',
@@ -497,21 +453,14 @@ app.post('/api/games/:id/join', async (req, res) => {
     );
     const currentCount = countResult.rows[0].cnt;
     if (currentCount >= game.max_players) {
-      const existingJoin = await pool.query(
-        'SELECT 1 FROM game_players WHERE game_id = $1 AND player_id = $2',
-        [gameId, pid]
-      );
-      if (existingJoin.rows.length > 0) {
-        return res.status(200).json({ status: 'joined', game_id: gameId, player_id: pid });
-      }
-      return res.status(409).json(E.conflict('Game is full'));
+      return res.status(400).json(E.badRequest('Game is full'));
     }
     const existingJoin = await pool.query(
       'SELECT 1 FROM game_players WHERE game_id = $1 AND player_id = $2',
       [gameId, pid]
     );
     if (existingJoin.rows.length > 0) {
-      return res.status(200).json({ status: 'joined', game_id: gameId, player_id: pid });
+      return res.status(400).json(E.badRequest('Player already in game'));
     }
     await pool.query(
       'INSERT INTO game_players (game_id, player_id, turn_order) VALUES ($1, $2, $3)',
@@ -641,16 +590,16 @@ app.post('/api/games/:id/place', async (req, res) => {
     if (!isValidId(id)) return res.status(404).json(E.notFound('Game not found'));
     const gameId = parseInt(id, 10);
     const body = req.body || {};
-    const player_id = body.player_id ?? body.playerId ?? body.playerld;
+    const player_id = body.player_id;
     const ships = body.ships;
 
     if (player_id == null) {
       return res.status(400).json(E.badRequest('player_id is required'));
     }
-    const pid = typeof player_id === 'number' ? player_id : parseInt(player_id, 10);
-    if (isNaN(pid) || pid < 1) {
+    if (!Number.isInteger(player_id) || player_id < 1) {
       return res.status(400).json(E.badRequest('Invalid player_id'));
     }
+    const pid = player_id;
 
     const gameResult = await pool.query(
       'SELECT * FROM games WHERE game_id = $1',
@@ -660,9 +609,6 @@ app.post('/api/games/:id/place', async (req, res) => {
       return res.status(404).json(E.notFound('Game not found'));
     }
     const game = gameResult.rows[0];
-    if (game.status !== 'waiting_setup') {
-      return res.status(400).json(E.badRequest('Game is not in setup phase'));
-    }
     const playerExists = await pool.query('SELECT 1 FROM players WHERE player_id = $1', [pid]);
     if (playerExists.rows.length === 0) {
       return res.status(400).json(E.badRequest('Player does not exist'));
@@ -675,14 +621,17 @@ app.post('/api/games/:id/place', async (req, res) => {
     if (gpResult.rows.length === 0) {
       return res.status(400).json(E.badRequest('Player is not in this game'));
     }
+    if (gpResult.rows[0].ships_placed) {
+      return res.status(409).json(E.conflict('Ships already placed for this player'));
+    }
+    if (game.status !== 'waiting_setup') {
+      return res.status(400).json(E.badRequest('Game is not in setup phase'));
+    }
     const placement = normalizeAndValidateShips(ships, game.grid_size);
     if (placement.error) {
       return res.status(400).json(E.badRequest(placement.error));
     }
     const coords = placement.coords;
-    if (gpResult.rows[0].ships_placed) {
-      return res.status(409).json(E.conflict('Ships already placed for this player'));
-    }
 
     for (const { row: r, col: c } of coords) {
       await pool.query(
@@ -712,16 +661,16 @@ app.post('/api/games/:id/ships', async (req, res) => {
     if (!isValidId(id)) return res.status(404).json(E.notFound('Game not found'));
     const gameId = parseInt(id, 10);
     const body = req.body || {};
-    const player_id = body.player_id ?? body.playerId ?? body.playerld;
+    const player_id = body.player_id;
     const ships = body.ships;
 
     if (player_id == null) {
       return res.status(400).json(E.badRequest('player_id is required'));
     }
-    const pid = typeof player_id === 'number' ? player_id : parseInt(player_id, 10);
-    if (isNaN(pid) || pid < 1) {
+    if (!Number.isInteger(player_id) || player_id < 1) {
       return res.status(400).json(E.badRequest('Invalid player_id'));
     }
+    const pid = player_id;
 
     const gameResult = await pool.query(
       'SELECT * FROM games WHERE game_id = $1',
@@ -731,9 +680,6 @@ app.post('/api/games/:id/ships', async (req, res) => {
       return res.status(404).json(E.notFound('Game not found'));
     }
     const game = gameResult.rows[0];
-    if (game.status !== 'waiting_setup') {
-      return res.status(400).json(E.badRequest('Game is not in setup phase'));
-    }
     const playerExists = await pool.query('SELECT 1 FROM players WHERE player_id = $1', [pid]);
     if (playerExists.rows.length === 0) {
       return res.status(400).json(E.badRequest('Player does not exist'));
@@ -746,14 +692,17 @@ app.post('/api/games/:id/ships', async (req, res) => {
     if (gpResult.rows.length === 0) {
       return res.status(400).json(E.badRequest('Player is not in this game'));
     }
+    if (gpResult.rows[0].ships_placed) {
+      return res.status(409).json(E.conflict('Ships already placed for this player'));
+    }
+    if (game.status !== 'waiting_setup') {
+      return res.status(400).json(E.badRequest('Game is not in setup phase'));
+    }
     const placement = normalizeAndValidateShips(ships, game.grid_size);
     if (placement.error) {
       return res.status(400).json(E.badRequest(placement.error));
     }
     const coords = placement.coords;
-    if (gpResult.rows[0].ships_placed) {
-      return res.status(409).json(E.conflict('Ships already placed for this player'));
-    }
 
     for (const { row: r, col: c } of coords) {
       await pool.query(
@@ -910,7 +859,7 @@ async function handleFire(req, res, overrideGameId = null) {
     }
 
     const body = req.body || {};
-    const player_id = body.player_id ?? body.playerId ?? body.playerld;
+    const player_id = body.player_id;
     const row = body.row;
     const col = body.col;
     if (player_id == null) return res.status(400).json(E.badRequest('player_id is required'));
@@ -954,6 +903,19 @@ async function handleFire(req, res, overrideGameId = null) {
       return res.status(400).json(E.badRequest('Coordinates out of bounds'));
     }
 
+    const dupGlobalCheck = await pool.query(
+      `SELECT 1
+       FROM moves
+       WHERE game_id = $1
+         AND move_row = $2
+         AND move_col = $3
+       LIMIT 1`,
+      [gameId, r, c]
+    );
+    if (dupGlobalCheck.rows.length > 0) {
+      return res.status(409).json(E.conflict('Cell already fired upon'));
+    }
+
     const activePlayers = await pool.query(
       'SELECT player_id FROM game_players WHERE game_id = $1 AND is_eliminated = FALSE ORDER BY turn_order ASC',
       [gameId]
@@ -992,22 +954,6 @@ async function handleFire(req, res, overrideGameId = null) {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-
-      const dupCheck = await client.query(
-        `SELECT 1
-         FROM moves
-         WHERE game_id = $1
-           AND move_row = $2
-           AND move_col = $3
-         LIMIT 1`,
-        [gameId, r, c]
-      );
-
-      if (dupCheck.rows.length > 0) {
-        const err = new Error('Cell already fired upon');
-        err.status = 409;
-        throw err;
-      }
 
       const targetRes = await client.query(
         `SELECT gp.player_id

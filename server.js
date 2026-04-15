@@ -277,8 +277,7 @@ app.post('/api/players', async (req, res) => {
       [displayName]
     );
     if (existing.rows.length > 0) {
-      const existingId = parseInt(existing.rows[0].player_id, 10);
-      return res.status(200).json({ player_id: existingId, username: displayName, displayName });
+      return res.status(409).json(E.conflict('Username already exists'));
     }
     const result = await pool.query(
       'INSERT INTO players (display_name) VALUES ($1) RETURNING player_id',
@@ -482,7 +481,7 @@ app.post('/api/games/:id/join', async (req, res) => {
     }
     const game = gameResult.rows[0];
     if (game.status !== 'waiting_setup') {
-      return res.status(409).json(E.conflict('Game already started'));
+      return res.status(400).json(E.badRequest('Game already started'));
     }
     const playerCheck = await pool.query(
       'SELECT player_id FROM players WHERE player_id = $1',
@@ -497,21 +496,14 @@ app.post('/api/games/:id/join', async (req, res) => {
     );
     const currentCount = countResult.rows[0].cnt;
     if (currentCount >= game.max_players) {
-      const existingJoin = await pool.query(
-        'SELECT 1 FROM game_players WHERE game_id = $1 AND player_id = $2',
-        [gameId, pid]
-      );
-      if (existingJoin.rows.length > 0) {
-        return res.status(200).json({ status: 'joined', game_id: gameId, player_id: pid });
-      }
-      return res.status(409).json(E.conflict('Game is full'));
+      return res.status(400).json(E.badRequest('Game is full'));
     }
     const existingJoin = await pool.query(
       'SELECT 1 FROM game_players WHERE game_id = $1 AND player_id = $2',
       [gameId, pid]
     );
     if (existingJoin.rows.length > 0) {
-      return res.status(200).json({ status: 'joined', game_id: gameId, player_id: pid });
+      return res.status(400).json(E.badRequest('Player already in game'));
     }
     await pool.query(
       'INSERT INTO game_players (game_id, player_id, turn_order) VALUES ($1, $2, $3)',
@@ -676,7 +668,7 @@ app.post('/api/games/:id/place', async (req, res) => {
       return res.status(400).json(E.badRequest('Player is not in this game'));
     }
     if (gpResult.rows[0].ships_placed) {
-      return res.status(409).json(E.conflict('Ships already placed for this player'));
+      return res.status(400).json(E.badRequest('Ships already placed for this player'));
     }
     const placement = normalizeAndValidateShips(ships, game.grid_size);
     if (placement.error) {
@@ -747,7 +739,7 @@ app.post('/api/games/:id/ships', async (req, res) => {
       return res.status(400).json(E.badRequest('Player is not in this game'));
     }
     if (gpResult.rows[0].ships_placed) {
-      return res.status(409).json(E.conflict('Ships already placed for this player'));
+      return res.status(400).json(E.badRequest('Ships already placed for this player'));
     }
     const placement = normalizeAndValidateShips(ships, game.grid_size);
     if (placement.error) {
@@ -937,21 +929,11 @@ async function handleFire(req, res, overrideGameId = null) {
       return res.status(400).json(E.badRequest('Coordinates out of bounds'));
     }
 
-    const dupGlobalCheck = await pool.query(
-      `SELECT 1
-       FROM moves
-       WHERE game_id = $1
-         AND move_row = $2
-         AND move_col = $3
-       LIMIT 1`,
-      [gameId, r, c]
-    );
-    if (dupGlobalCheck.rows.length > 0) {
-      return res.status(409).json(E.conflict('Cell already fired upon'));
-    }
-
     if (game.status === 'finished') {
       return res.status(400).json(E.badRequest('Game is already finished'));
+    }
+    if (game.status !== 'playing') {
+      return res.status(400).json(E.badRequest('Game has not started yet'));
     }
 
     const playerExists = await pool.query('SELECT 1 FROM players WHERE player_id = $1', [pid]);
@@ -983,6 +965,19 @@ async function handleFire(req, res, overrideGameId = null) {
       return res.status(403).json(E.forbidden('Not your turn'));
     }
 
+    const dupGlobalCheck = await pool.query(
+      `SELECT 1
+       FROM moves
+       WHERE game_id = $1
+         AND move_row = $2
+         AND move_col = $3
+       LIMIT 1`,
+      [gameId, r, c]
+    );
+    if (dupGlobalCheck.rows.length > 0) {
+      return res.status(409).json(E.conflict('Cell already fired upon'));
+    }
+
     const allPlacedResult = await pool.query(
       `SELECT
          COUNT(*)::int AS total,
@@ -995,10 +990,6 @@ async function handleFire(req, res, overrideGameId = null) {
     const placedPlayers = allPlacedResult.rows[0].placed || 0;
     if (totalJoined !== game.max_players || placedPlayers !== totalJoined) {
       return res.status(400).json(E.badRequest('Not all players have joined or placed ships'));
-    }
-
-    if (game.status !== 'playing') {
-      return res.status(400).json(E.badRequest('Game has not started yet'));
     }
 
     // ---- Transactional move execution ----

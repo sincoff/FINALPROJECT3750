@@ -76,6 +76,9 @@ function normalizeAndValidateShips(ships, gridSize) {
   const normalizedShips = [];
 
   for (const rawShip of ships) {
+    if (Array.isArray(rawShip) && rawShip.length >= 2 && typeof rawShip[0] === 'number') {
+      return { error: 'Ships must be objects with row and col properties' };
+    }
     let cells = [];
 
     if (Array.isArray(rawShip)) {
@@ -236,9 +239,6 @@ app.use('/api/test', (req, res, next) => {
   next();
 });
 
-// Static files
-app.use(express.static('.'));
-
 
 // ========== Production Endpoints ==========
 
@@ -278,8 +278,9 @@ app.post('/api/players', async (req, res) => {
       [displayName]
     );
     if (existing.rows.length > 0) {
-      const existingId = parseInt(existing.rows[0].player_id, 10);
-      return res.status(200).json({ player_id: existingId, username: displayName, displayName });
+      return res
+        .status(409)
+        .json({ error: 'conflict', message: 'Username already exists' });
     }
     const result = await pool.query(
       'INSERT INTO players (display_name) VALUES ($1) RETURNING player_id',
@@ -483,7 +484,7 @@ app.post('/api/games/:id/join', async (req, res) => {
     }
     const game = gameResult.rows[0];
     if (game.status !== 'waiting_setup') {
-      return res.status(409).json(E.conflict('Game already started'));
+      return res.status(400).json(E.badRequest('Game already started'));
     }
     const playerCheck = await pool.query(
       'SELECT player_id FROM players WHERE player_id = $1',
@@ -505,7 +506,7 @@ app.post('/api/games/:id/join', async (req, res) => {
       if (existingJoin.rows.length > 0) {
         return res.status(200).json({ status: 'joined', game_id: gameId, player_id: pid });
       }
-      return res.status(409).json(E.conflict('Game is full'));
+      return res.status(400).json(E.badRequest('Game is full'));
     }
     const existingJoin = await pool.query(
       'SELECT 1 FROM game_players WHERE game_id = $1 AND player_id = $2',
@@ -1365,6 +1366,9 @@ app.get('/api/test/games/:id/board/:player_id', async (req, res) => {
 });
 
 // ========== Startup ==========
+
+// Static files
+app.use(express.static('.'));
 
 async function start() {
   if (!process.env.DATABASE_URL) {

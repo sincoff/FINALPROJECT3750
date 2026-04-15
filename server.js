@@ -226,20 +226,6 @@ app.get('/api/health', (req, res) => {
   res.status(200).json({ status: 'ok', uptime_seconds: Math.floor(process.uptime()) });
 });
 
-// Test mode middleware
-app.use('/api/test', (req, res, next) => {
-  console.log(`[test-middleware] ${req.method} ${req.originalUrl}`);
-  if (TEST_MODE !== 'true') {
-    return res.status(403).json(E.forbidden('Test mode disabled'));
-  }
-  const password = req.headers['x-test-password'];
-  if (password !== 'clemson-test-2026') {
-    return res.status(403).json(E.forbidden('Invalid or missing test password'));
-  }
-  next();
-});
-
-
 // ========== Production Endpoints ==========
 
 // POST /api/reset
@@ -677,9 +663,11 @@ app.post('/api/games/:id/place', async (req, res) => {
     if (gpResult.rows.length === 0) {
       return res.status(400).json(E.badRequest('Player is not in this game'));
     }
+    console.log(`[place] ships_placed precheck game=${gameId} player=${pid} placed=${gpResult.rows[0].ships_placed}`);
     if (gpResult.rows[0].ships_placed) {
       return res.status(409).json(E.conflict('Ships already placed for this player'));
     }
+    console.log(`[place] validating ships game=${gameId} player=${pid}`);
     const placement = normalizeAndValidateShips(ships, game.grid_size);
     if (placement.error) {
       return res.status(400).json(E.badRequest(placement.error));
@@ -748,9 +736,11 @@ app.post('/api/games/:id/ships', async (req, res) => {
     if (gpResult.rows.length === 0) {
       return res.status(400).json(E.badRequest('Player is not in this game'));
     }
+    console.log(`[ships] ships_placed precheck game=${gameId} player=${pid} placed=${gpResult.rows[0].ships_placed}`);
     if (gpResult.rows[0].ships_placed) {
       return res.status(409).json(E.conflict('Ships already placed for this player'));
     }
+    console.log(`[ships] validating ships game=${gameId} player=${pid}`);
     const placement = normalizeAndValidateShips(ships, game.grid_size);
     if (placement.error) {
       return res.status(400).json(E.badRequest(placement.error));
@@ -934,26 +924,11 @@ async function handleFire(req, res, overrideGameId = null) {
     }
     const game = gameResult.rows[0];
 
-    const coordBoundsOk = r >= 0 && r < game.grid_size && c >= 0 && c < game.grid_size;
-    if (!coordBoundsOk) {
-      return res.status(400).json(E.badRequest('Coordinates out of bounds'));
-    }
-
-    const dupGlobalCheck = await pool.query(
-      `SELECT 1
-       FROM moves
-       WHERE game_id = $1
-         AND move_row = $2
-         AND move_col = $3
-       LIMIT 1`,
-      [gameId, r, c]
-    );
-    if (dupGlobalCheck.rows.length > 0) {
-      return res.status(409).json(E.conflict('Cell already fired upon'));
-    }
-
     if (game.status === 'finished') {
       return res.status(400).json(E.badRequest('Game is already finished'));
+    }
+    if (game.status !== 'playing') {
+      return res.status(400).json(E.badRequest('Game has not started yet'));
     }
 
     const playerExists = await pool.query('SELECT 1 FROM players WHERE player_id = $1', [pid]);
@@ -985,6 +960,24 @@ async function handleFire(req, res, overrideGameId = null) {
       return res.status(403).json(E.forbidden('Not your turn'));
     }
 
+    const coordBoundsOk = r >= 0 && r < game.grid_size && c >= 0 && c < game.grid_size;
+    if (!coordBoundsOk) {
+      return res.status(400).json(E.badRequest('Coordinates out of bounds'));
+    }
+
+    const dupGlobalCheck = await pool.query(
+      `SELECT 1
+       FROM moves
+       WHERE game_id = $1
+         AND move_row = $2
+         AND move_col = $3
+       LIMIT 1`,
+      [gameId, r, c]
+    );
+    if (dupGlobalCheck.rows.length > 0) {
+      return res.status(409).json(E.conflict('Cell already fired upon'));
+    }
+
 
     const allPlacedResult = await pool.query(
       `SELECT
@@ -998,10 +991,6 @@ async function handleFire(req, res, overrideGameId = null) {
     const placedPlayers = allPlacedResult.rows[0].placed || 0;
     if (totalJoined !== game.max_players || placedPlayers !== totalJoined) {
       return res.status(400).json(E.badRequest('Not all players have joined or placed ships'));
-    }
-
-    if (game.status !== 'playing') {
-      return res.status(400).json(E.badRequest('Game has not started yet'));
     }
 
     // ---- Transactional move execution ----
@@ -1214,8 +1203,8 @@ app.get('/api/games/:id/moves', async (req, res) => {
 
 // POST /api/test/games/:id/restart
 app.post('/api/test/games/:id/restart', async (req, res) => {
-  if (TEST_MODE !== 'true') return res.status(403).json(E.forbidden('Test mode disabled'));
-  if (req.headers['x-test-password'] !== 'clemson-test-2026') return res.status(403).json(E.forbidden('Invalid or missing test password'));
+  if (TEST_MODE !== 'true') return res.status(403).json({ error: 'forbidden', message: 'Test mode disabled' });
+  if (req.headers['x-test-password'] !== 'clemson-test-2026') return res.status(403).json({ error: 'forbidden', message: 'Invalid or missing test password' });
   try {
     const { id } = req.params;
     if (!isValidId(id)) return res.status(404).json(E.notFound('Game not found'));
@@ -1244,8 +1233,8 @@ app.post('/api/test/games/:id/restart', async (req, res) => {
 // POST /api/test/games/:id/ships
 // Test-only deterministic ship placement (allows override).
 app.post('/api/test/games/:id/ships', async (req, res) => {
-  if (TEST_MODE !== 'true') return res.status(403).json(E.forbidden('Test mode disabled'));
-  if (req.headers['x-test-password'] !== 'clemson-test-2026') return res.status(403).json(E.forbidden('Invalid or missing test password'));
+  if (TEST_MODE !== 'true') return res.status(403).json({ error: 'forbidden', message: 'Test mode disabled' });
+  if (req.headers['x-test-password'] !== 'clemson-test-2026') return res.status(403).json({ error: 'forbidden', message: 'Invalid or missing test password' });
   try {
     const { id } = req.params;
     if (!isValidId(id)) return res.status(404).json(E.notFound('Game not found'));
@@ -1321,8 +1310,8 @@ app.post('/api/test/games/:id/ships', async (req, res) => {
 
 // GET /api/test/games/:id/board/:player_id
 app.get('/api/test/games/:id/board/:player_id', async (req, res) => {
-  if (TEST_MODE !== 'true') return res.status(403).json(E.forbidden('Test mode disabled'));
-  if (req.headers['x-test-password'] !== 'clemson-test-2026') return res.status(403).json(E.forbidden('Invalid or missing test password'));
+  if (TEST_MODE !== 'true') return res.status(403).json({ error: 'forbidden', message: 'Test mode disabled' });
+  if (req.headers['x-test-password'] !== 'clemson-test-2026') return res.status(403).json({ error: 'forbidden', message: 'Invalid or missing test password' });
   try {
     const { id, player_id } = req.params;
     if (!isValidId(id)) return res.status(404).json(E.notFound('Game not found'));

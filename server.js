@@ -371,8 +371,18 @@ app.post('/api/games', async (req, res) => {
     const creator_id = body.creator_id ?? body.creatorId;
     const grid_size = body.grid_size ?? body.gridSize;
     const max_players = body.max_players ?? body.maxPlayers;
-    const gs = typeof grid_size === 'number' ? grid_size : parseInt(grid_size, 10);
-    const mp = typeof max_players === 'number' ? max_players : parseInt(max_players, 10);
+    // Pool/spec expect strict numeric types for game creation fields.
+    if (!Number.isInteger(grid_size)) {
+      return res.status(400).json(E.badRequest('grid_size must be an integer'));
+    }
+    if (!Number.isInteger(max_players)) {
+      return res.status(400).json(E.badRequest('max_players must be an integer'));
+    }
+    if (!Number.isInteger(creator_id)) {
+      return res.status(400).json(E.badRequest('creator_id is required'));
+    }
+    const gs = grid_size;
+    const mp = max_players;
     if (!Number.isInteger(gs) || gs < 5 || gs > 15) {
       return res.status(400).json(E.badRequest('grid_size must be between 5 and 15 inclusive'));
     }
@@ -382,11 +392,8 @@ app.post('/api/games', async (req, res) => {
     if (mp > 10) {
       return res.status(400).json(E.badRequest('max_players must be <= 10'));
     }
-    if (creator_id == null) {
-      return res.status(400).json(E.badRequest('creator_id is required'));
-    }
-    const cid = typeof creator_id === 'number' ? creator_id : parseInt(creator_id, 10);
-    if (isNaN(cid) || cid < 1) {
+    const cid = creator_id;
+    if (cid < 1) {
       return res.status(400).json(E.badRequest('creator_id does not exist'));
     }
     const creatorCheck = await pool.query(
@@ -457,8 +464,11 @@ app.post('/api/games/:id/join', async (req, res) => {
     if (player_id == null) {
       return res.status(400).json(E.badRequest('player_id is required'));
     }
-    const pid = typeof player_id === 'number' ? player_id : parseInt(player_id, 10);
-    if (isNaN(pid) || pid < 1) {
+    if (!Number.isInteger(player_id)) {
+      return res.status(400).json(E.badRequest('player_id must be an integer'));
+    }
+    const pid = player_id;
+    if (pid < 1) {
       return res.status(400).json(E.badRequest('Invalid player_id'));
     }
     const gameResult = await pool.query(
@@ -490,7 +500,7 @@ app.post('/api/games/:id/join', async (req, res) => {
         [gameId, pid]
       );
       if (existingJoin.rows.length > 0) {
-        return res.status(200).json({ status: 'joined', game_id: gameId, player_id: pid });
+        return res.status(400).json(E.badRequest('Player already joined this game'));
       }
       return res.status(400).json(E.badRequest('Game is full'));
     }
@@ -499,7 +509,7 @@ app.post('/api/games/:id/join', async (req, res) => {
       [gameId, pid]
     );
     if (existingJoin.rows.length > 0) {
-      return res.status(200).json({ status: 'joined', game_id: gameId, player_id: pid });
+      return res.status(400).json(E.badRequest('Player already joined this game'));
     }
     await pool.query(
       'INSERT INTO game_players (game_id, player_id, turn_order) VALUES ($1, $2, $3)',
@@ -928,7 +938,7 @@ async function handleFire(req, res, overrideGameId = null) {
       return res.status(400).json(E.badRequest('Game is already finished'));
     }
     if (game.status !== 'playing') {
-      return res.status(400).json(E.badRequest('Game has not started yet'));
+      return res.status(403).json(E.forbidden('Game is not active'));
     }
 
     const playerExists = await pool.query('SELECT 1 FROM players WHERE player_id = $1', [pid]);

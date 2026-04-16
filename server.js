@@ -273,7 +273,7 @@ app.post('/api/players', async (req, res) => {
       [displayName]
     );
     const playerId = parseInt(result.rows[0].player_id, 10);
-    res.status(201).json({ player_id: playerId, username: displayName, displayName });
+    res.status(201).json({ player_id: playerId });
   } catch (err) {
     console.error('POST /api/players:', err);
     res.status(500).json(E.server('Internal server error'));
@@ -648,9 +648,6 @@ app.post('/api/games/:id/place', async (req, res) => {
       return res.status(404).json(E.notFound('Game not found'));
     }
     const game = gameResult.rows[0];
-    if (game.status !== 'waiting_setup') {
-      return res.status(400).json(E.badRequest('Game is not in setup phase'));
-    }
     const playerExists = await pool.query('SELECT 1 FROM players WHERE player_id = $1', [pid]);
     if (playerExists.rows.length === 0) {
       return res.status(400).json(E.badRequest('Player does not exist'));
@@ -666,6 +663,9 @@ app.post('/api/games/:id/place', async (req, res) => {
     console.log(`[place] ships_placed precheck game=${gameId} player=${pid} placed=${gpResult.rows[0].ships_placed}`);
     if (gpResult.rows[0].ships_placed) {
       return res.status(409).json(E.conflict('Ships already placed for this player'));
+    }
+    if (game.status !== 'waiting_setup') {
+      return res.status(400).json(E.badRequest('Game is not in setup phase'));
     }
     console.log(`[place] validating ships game=${gameId} player=${pid}`);
     const placement = normalizeAndValidateShips(ships, game.grid_size);
@@ -721,9 +721,6 @@ app.post('/api/games/:id/ships', async (req, res) => {
       return res.status(404).json(E.notFound('Game not found'));
     }
     const game = gameResult.rows[0];
-    if (game.status !== 'waiting_setup') {
-      return res.status(400).json(E.badRequest('Game is not in setup phase'));
-    }
     const playerExists = await pool.query('SELECT 1 FROM players WHERE player_id = $1', [pid]);
     if (playerExists.rows.length === 0) {
       return res.status(400).json(E.badRequest('Player does not exist'));
@@ -739,6 +736,9 @@ app.post('/api/games/:id/ships', async (req, res) => {
     console.log(`[ships] ships_placed precheck game=${gameId} player=${pid} placed=${gpResult.rows[0].ships_placed}`);
     if (gpResult.rows[0].ships_placed) {
       return res.status(409).json(E.conflict('Ships already placed for this player'));
+    }
+    if (game.status !== 'waiting_setup') {
+      return res.status(400).json(E.badRequest('Game is not in setup phase'));
     }
     console.log(`[ships] validating ships game=${gameId} player=${pid}`);
     const placement = normalizeAndValidateShips(ships, game.grid_size);
@@ -952,14 +952,6 @@ async function handleFire(req, res, overrideGameId = null) {
       return res.status(400).json(E.badRequest('No active players'));
     }
 
-    const currentTurnIndex = parseInt(game.current_turn_index, 10) || 0;
-    const expectedTurnPlayerId =
-      activePlayers.rows[currentTurnIndex % activePlayers.rows.length].player_id;
-
-    if (expectedTurnPlayerId !== pid) {
-      return res.status(403).json(E.forbidden('Not your turn'));
-    }
-
     const coordBoundsOk = r >= 0 && r < game.grid_size && c >= 0 && c < game.grid_size;
     if (!coordBoundsOk) {
       return res.status(400).json(E.badRequest('Coordinates out of bounds'));
@@ -976,6 +968,14 @@ async function handleFire(req, res, overrideGameId = null) {
     );
     if (dupGlobalCheck.rows.length > 0) {
       return res.status(409).json(E.conflict('Cell already fired upon'));
+    }
+
+    const currentTurnIndex = parseInt(game.current_turn_index, 10) || 0;
+    const expectedTurnPlayerId =
+      activePlayers.rows[currentTurnIndex % activePlayers.rows.length].player_id;
+
+    if (expectedTurnPlayerId !== pid) {
+      return res.status(403).json(E.forbidden('Not your turn'));
     }
 
 

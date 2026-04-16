@@ -188,6 +188,9 @@ async function initDatabase() {
         created_at TIMESTAMP DEFAULT NOW()
       );
     `);
+    await client.query(
+      'CREATE UNIQUE INDEX IF NOT EXISTS moves_game_cell_unique ON moves(game_id, move_row, move_col)'
+    );
     await client.query('TRUNCATE players, games, game_players, ships, moves RESTART IDENTITY CASCADE');
     console.log('Database tables initialized.');
   } finally {
@@ -492,13 +495,6 @@ app.post('/api/games/:id/join', async (req, res) => {
     );
     const currentCount = countResult.rows[0].cnt;
     if (currentCount >= game.max_players) {
-      const existingJoin = await pool.query(
-        'SELECT 1 FROM game_players WHERE game_id = $1 AND player_id = $2',
-        [gameId, pid]
-      );
-      if (existingJoin.rows.length > 0) {
-        return res.status(200).json({ status: 'joined', game_id: gameId, player_id: pid });
-      }
       return res.status(400).json(E.badRequest('Game is full'));
     }
     const existingJoin = await pool.query(
@@ -506,7 +502,7 @@ app.post('/api/games/:id/join', async (req, res) => {
       [gameId, pid]
     );
     if (existingJoin.rows.length > 0) {
-      return res.status(200).json({ status: 'joined', game_id: gameId, player_id: pid });
+      return res.status(400).json(E.badRequest('Player already joined this game'));
     }
     await pool.query(
       'INSERT INTO game_players (game_id, player_id, turn_order) VALUES ($1, $2, $3)',
@@ -958,6 +954,12 @@ async function handleFire(req, res, overrideGameId = null) {
     if (activePlayers.rows.length === 0) {
       return res.status(400).json(E.badRequest('No active players'));
     }
+    if (activePlayers.rows.length <= 1) {
+      if (game.status !== 'finished') {
+        await pool.query('UPDATE games SET status = $1 WHERE game_id = $2', ['finished', gameId]);
+      }
+      return res.status(400).json(E.badRequest('Game is already finished'));
+    }
 
     const coordBoundsOk = r >= 0 && r < game.grid_size && c >= 0 && c < game.grid_size;
     if (!coordBoundsOk) {
@@ -1024,11 +1026,18 @@ async function handleFire(req, res, overrideGameId = null) {
       const targetPlayerId = targetRes.rows.length > 0 ? targetRes.rows[0].player_id : null;
       const result = targetPlayerId ? 'hit' : 'miss';
 
-      await client.query(
-        `INSERT INTO moves (game_id, player_id, target_player_id, move_row, move_col, result, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
-        [gameId, pid, targetPlayerId, r, c, result]
-      );
+      try {
+        await client.query(
+          `INSERT INTO moves (game_id, player_id, target_player_id, move_row, move_col, result, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+          [gameId, pid, targetPlayerId, r, c, result]
+        );
+      } catch (insertErr) {
+        if (insertErr && insertErr.code === '23505') {
+          throw Object.assign(new Error('Cell already fired upon'), { status: 409 });
+        }
+        throw insertErr;
+      }
 
       // Must happen in the same transaction as the move insert.
       await client.query('UPDATE players SET total_moves = total_moves + 1 WHERE player_id = $1', [pid]);

@@ -273,7 +273,7 @@ app.post('/api/players', async (req, res) => {
       [displayName]
     );
     const playerId = parseInt(result.rows[0].player_id, 10);
-    res.status(201).json({ player_id: playerId });
+    res.status(201).json({ player_id: playerId, username: displayName });
   } catch (err) {
     console.error('POST /api/players:', err);
     res.status(500).json(E.server('Internal server error'));

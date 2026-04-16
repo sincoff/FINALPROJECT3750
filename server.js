@@ -459,18 +459,6 @@ app.post('/api/games/:id/join', async (req, res) => {
     const { id } = req.params;
     if (!isValidId(id)) return res.status(404).json(E.notFound('Game not found'));
     const gameId = parseInt(id, 10);
-    const body = req.body || {};
-    const player_id = body.player_id ?? body.playerId ?? body.playerld;
-    if (player_id == null) {
-      return res.status(400).json(E.badRequest('player_id is required'));
-    }
-    if (!Number.isInteger(player_id)) {
-      return res.status(400).json(E.badRequest('player_id must be an integer'));
-    }
-    const pid = player_id;
-    if (pid < 1) {
-      return res.status(400).json(E.badRequest('Invalid player_id'));
-    }
     const gameResult = await pool.query(
       'SELECT * FROM games WHERE game_id = $1',
       [gameId]
@@ -479,6 +467,15 @@ app.post('/api/games/:id/join', async (req, res) => {
       return res.status(404).json(E.notFound('Game not found'));
     }
     const game = gameResult.rows[0];
+    const body = req.body || {};
+    const player_id = body.player_id ?? body.playerId ?? body.playerld;
+    if (player_id == null) {
+      return res.status(400).json(E.badRequest('player_id is required'));
+    }
+    const pid = typeof player_id === 'number' ? player_id : parseInt(player_id, 10);
+    if (isNaN(pid) || pid < 1) {
+      return res.status(400).json(E.badRequest('Invalid player_id'));
+    }
     if (game.status !== 'waiting_setup') {
       return res.status(400).json(E.badRequest('Game already started'));
     }
@@ -500,7 +497,7 @@ app.post('/api/games/:id/join', async (req, res) => {
         [gameId, pid]
       );
       if (existingJoin.rows.length > 0) {
-        return res.status(400).json(E.badRequest('Player already joined this game'));
+        return res.status(200).json({ status: 'joined', game_id: gameId, player_id: pid });
       }
       return res.status(400).json(E.badRequest('Game is full'));
     }
@@ -509,7 +506,7 @@ app.post('/api/games/:id/join', async (req, res) => {
       [gameId, pid]
     );
     if (existingJoin.rows.length > 0) {
-      return res.status(400).json(E.badRequest('Player already joined this game'));
+      return res.status(200).json({ status: 'joined', game_id: gameId, player_id: pid });
     }
     await pool.query(
       'INSERT INTO game_players (game_id, player_id, turn_order) VALUES ($1, $2, $3)',

@@ -273,7 +273,7 @@ app.post('/api/players', async (req, res) => {
       [displayName]
     );
     const playerId = parseInt(result.rows[0].player_id, 10);
-    res.status(201).json({ player_id: playerId, username: displayName, displayName });
+    res.status(201).json({ player_id: playerId });
   } catch (err) {
     console.error('POST /api/players:', err);
     res.status(500).json(E.server('Internal server error'));
@@ -407,8 +407,6 @@ app.post('/api/games', async (req, res) => {
     );
     res.status(201).json({
       game_id: gameId,
-      grid_size: gs,
-      max_players: mp,
       status: 'waiting_setup',
     });
   } catch (err) {
@@ -969,10 +967,11 @@ async function handleFire(req, res, overrideGameId = null) {
       `SELECT 1
        FROM moves
        WHERE game_id = $1
-         AND move_row = $2
-         AND move_col = $3
+         AND player_id = $2
+         AND move_row = $3
+         AND move_col = $4
        LIMIT 1`,
-      [gameId, r, c]
+      [gameId, pid, r, c]
     );
     if (dupGlobalCheck.rows.length > 0) {
       return res.status(409).json(E.conflict('Cell already fired upon'));

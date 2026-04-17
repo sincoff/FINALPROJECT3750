@@ -13,3 +13,6 @@ test-render-smoke.js
 tests-requires-v3.json
 tests.json
 tests.json
+pool_instructor.json
+pool_teams.json
+VIDEO_SCRIPT.md

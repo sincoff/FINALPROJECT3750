@@ -292,6 +292,7 @@
 
     ui.opponentGrids.innerHTML = '';
     const myMoves = state.moves.filter((m) => m.player_id === state.playerId);
+    const globallyUsedCells = new Set(state.moves.map((m) => key(m.row, m.col)));
     for (const pid of state.participants) {
       if (pid === state.playerId) continue;
       const block = document.createElement('div');
@@ -310,6 +311,11 @@
         const coord = key(m.row, m.col);
         if (m.result === 'hit') marks.hits.add(coord);
         if (m.result === 'miss') marks.misses.add(coord);
+      }
+      // Server enforces one shot per coordinate globally for the game.
+      // Show globally-used cells so a "already fired" rejection is visible in UI.
+      for (const coord of globallyUsedCells) {
+        if (!marks.hits.has(coord)) marks.misses.add(coord);
       }
       paintGrid(
         grid,

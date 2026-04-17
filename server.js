@@ -188,6 +188,9 @@ async function initDatabase() {
         created_at TIMESTAMP DEFAULT NOW()
       );
     `);
+    await client.query(
+      'CREATE UNIQUE INDEX IF NOT EXISTS moves_game_cell_unique ON moves(game_id, move_row, move_col)'
+    );
     await client.query('TRUNCATE players, games, game_players, ships, moves RESTART IDENTITY CASCADE');
     console.log('Database tables initialized.');
   } finally {
@@ -371,8 +374,18 @@ app.post('/api/games', async (req, res) => {
     const creator_id = body.creator_id ?? body.creatorId;
     const grid_size = body.grid_size ?? body.gridSize;
     const max_players = body.max_players ?? body.maxPlayers;
-    const gs = typeof grid_size === 'number' ? grid_size : parseInt(grid_size, 10);
-    const mp = typeof max_players === 'number' ? max_players : parseInt(max_players, 10);
+    // Pool/spec expect strict numeric types for game creation fields.
+    if (!Number.isInteger(grid_size)) {
+      return res.status(400).json(E.badRequest('grid_size must be an integer'));
+    }
+    if (!Number.isInteger(max_players)) {
+      return res.status(400).json(E.badRequest('max_players must be an integer'));
+    }
+    if (!Number.isInteger(creator_id)) {
+      return res.status(400).json(E.badRequest('creator_id is required'));
+    }
+    const gs = grid_size;
+    const mp = max_players;
     if (!Number.isInteger(gs) || gs < 5 || gs > 15) {
       return res.status(400).json(E.badRequest('grid_size must be between 5 and 15 inclusive'));
     }
@@ -382,11 +395,8 @@ app.post('/api/games', async (req, res) => {
     if (mp > 10) {
       return res.status(400).json(E.badRequest('max_players must be <= 10'));
     }
-    if (creator_id == null) {
-      return res.status(400).json(E.badRequest('creator_id is required'));
-    }
-    const cid = typeof creator_id === 'number' ? creator_id : parseInt(creator_id, 10);
-    if (isNaN(cid) || cid < 1) {
+    const cid = creator_id;
+    if (cid < 1) {
       return res.status(400).json(E.badRequest('creator_id does not exist'));
     }
     const creatorCheck = await pool.query(
@@ -452,6 +462,14 @@ app.post('/api/games/:id/join', async (req, res) => {
     const { id } = req.params;
     if (!isValidId(id)) return res.status(404).json(E.notFound('Game not found'));
     const gameId = parseInt(id, 10);
+    const gameResult = await pool.query(
+      'SELECT * FROM games WHERE game_id = $1',
+      [gameId]
+    );
+    if (gameResult.rows.length === 0) {
+      return res.status(404).json(E.notFound('Game not found'));
+    }
+    const game = gameResult.rows[0];
     const body = req.body || {};
     const player_id = body.player_id ?? body.playerId ?? body.playerld;
     if (player_id == null) {
@@ -461,14 +479,6 @@ app.post('/api/games/:id/join', async (req, res) => {
     if (isNaN(pid) || pid < 1) {
       return res.status(400).json(E.badRequest('Invalid player_id'));
     }
-    const gameResult = await pool.query(
-      'SELECT * FROM games WHERE game_id = $1',
-      [gameId]
-    );
-    if (gameResult.rows.length === 0) {
-      return res.status(404).json(E.notFound('Game not found'));
-    }
-    const game = gameResult.rows[0];
     if (game.status !== 'waiting_setup') {
       return res.status(400).json(E.badRequest('Game already started'));
     }
@@ -928,7 +938,7 @@ async function handleFire(req, res, overrideGameId = null) {
       return res.status(400).json(E.badRequest('Game is already finished'));
     }
     if (game.status !== 'playing') {
-      return res.status(400).json(E.badRequest('Game has not started yet'));
+      return res.status(403).json(E.forbidden('Game is not active'));
     }
 
     const playerExists = await pool.query('SELECT 1 FROM players WHERE player_id = $1', [pid]);
@@ -951,7 +961,6 @@ async function handleFire(req, res, overrideGameId = null) {
     if (activePlayers.rows.length === 0) {
       return res.status(400).json(E.badRequest('No active players'));
     }
-
     const coordBoundsOk = r >= 0 && r < game.grid_size && c >= 0 && c < game.grid_size;
     if (!coordBoundsOk) {
       return res.status(400).json(E.badRequest('Coordinates out of bounds'));
@@ -1018,11 +1027,18 @@ async function handleFire(req, res, overrideGameId = null) {
       const targetPlayerId = targetRes.rows.length > 0 ? targetRes.rows[0].player_id : null;
       const result = targetPlayerId ? 'hit' : 'miss';
 
-      await client.query(
-        `INSERT INTO moves (game_id, player_id, target_player_id, move_row, move_col, result, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
-        [gameId, pid, targetPlayerId, r, c, result]
-      );
+      try {
+        await client.query(
+          `INSERT INTO moves (game_id, player_id, target_player_id, move_row, move_col, result, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+          [gameId, pid, targetPlayerId, r, c, result]
+        );
+      } catch (insertErr) {
+        if (insertErr && insertErr.code === '23505') {
+          throw Object.assign(new Error('Cell already fired upon'), { status: 409 });
+        }
+        throw insertErr;
+      }
 
       // Must happen in the same transaction as the move insert.
       await client.query('UPDATE players SET total_moves = total_moves + 1 WHERE player_id = $1', [pid]);

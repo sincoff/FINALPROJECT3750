@@ -100,7 +100,7 @@
     game: null,
     vertical: false,
     localShips: [],
-    globallyUsedCells: new Set(),
+    myUsedCells: new Set(),
   };
 
   function setStatus(msg) { ui.status.textContent = msg; }
@@ -302,7 +302,7 @@
 
     ui.opponentGrids.innerHTML = '';
     const myMoves = state.moves.filter((m) => m.player_id === state.playerId);
-    state.globallyUsedCells = new Set(state.moves.map((m) => key(m.row, m.col)));
+    state.myUsedCells = new Set(myMoves.map((m) => key(m.row, m.col)));
     for (const pid of state.participants) {
       if (pid === state.playerId) continue;
       const block = document.createElement('div');
@@ -404,8 +404,8 @@
   }
 
   async function onFire(_targetPlayerId, r, c) {
-    if (state.globallyUsedCells.has(key(r, c))) {
-      setStatus('That coordinate was already used in this game.');
+    if (state.myUsedCells.has(key(r, c))) {
+      setStatus('You already fired at that location.');
       return;
     }
     try {

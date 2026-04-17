@@ -269,14 +269,14 @@ app.post('/api/players', async (req, res) => {
     if (existing.rows.length > 0) {
       return res
         .status(409)
-        .json({ error: 'conflict', message: 'Username already exists' });
+        .json({ error: 'conflict', message: 'Username already taken' });
     }
     const result = await pool.query(
       'INSERT INTO players (display_name) VALUES ($1) RETURNING player_id',
       [displayName]
     );
     const playerId = parseInt(result.rows[0].player_id, 10);
-    res.status(201).json({ player_id: playerId });
+    res.status(201).json({ player_id: playerId, username: displayName });
   } catch (err) {
     console.error('POST /api/players:', err);
     res.status(500).json(E.server('Internal server error'));
@@ -494,22 +494,15 @@ app.post('/api/games/:id/join', async (req, res) => {
       [gameId]
     );
     const currentCount = countResult.rows[0].cnt;
-    if (currentCount >= game.max_players) {
-      const existingJoin = await pool.query(
-        'SELECT 1 FROM game_players WHERE game_id = $1 AND player_id = $2',
-        [gameId, pid]
-      );
-      if (existingJoin.rows.length > 0) {
-        return res.status(200).json({ status: 'joined', game_id: gameId, player_id: pid });
-      }
-      return res.status(400).json(E.badRequest('Game is full'));
-    }
     const existingJoin = await pool.query(
       'SELECT 1 FROM game_players WHERE game_id = $1 AND player_id = $2',
       [gameId, pid]
     );
     if (existingJoin.rows.length > 0) {
-      return res.status(200).json({ status: 'joined', game_id: gameId, player_id: pid });
+      return res.status(400).json(E.badRequest('Player already in game'));
+    }
+    if (currentCount >= game.max_players) {
+      return res.status(400).json(E.badRequest('Game is full'));
     }
     await pool.query(
       'INSERT INTO game_players (game_id, player_id, turn_order) VALUES ($1, $2, $3)',
@@ -970,11 +963,10 @@ async function handleFire(req, res, overrideGameId = null) {
       `SELECT 1
        FROM moves
        WHERE game_id = $1
-         AND player_id = $2
-         AND move_row = $3
-         AND move_col = $4
+         AND move_row = $2
+         AND move_col = $3
        LIMIT 1`,
-      [gameId, pid, r, c]
+      [gameId, r, c]
     );
     if (dupGlobalCheck.rows.length > 0) {
       return res.status(409).json(E.conflict('Cell already fired upon'));

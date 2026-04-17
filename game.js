@@ -192,6 +192,7 @@
     for (const m of state.moves) {
       if (m.player_id === state.playerId) continue;
       if (m.result !== 'hit') continue;
+      if (m.target_player_id != null && m.target_player_id !== state.playerId) continue;
       const k = key(m.row, m.col);
       if (myShipSet.has(k)) hits.add(k);
     }
@@ -317,6 +318,7 @@
       // we can only render your aggregate outgoing marks on each opponent board.
       const marks = { hits: new Set(), misses: new Set() };
       for (const m of myMoves) {
+        if (m.target_player_id != null && m.target_player_id !== pid) continue;
         const coord = key(m.row, m.col);
         if (m.result === 'hit') marks.hits.add(coord);
         if (m.result === 'miss') marks.misses.add(coord);

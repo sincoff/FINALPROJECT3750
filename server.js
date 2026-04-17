@@ -1203,6 +1203,7 @@ app.get('/api/games/:id/moves', async (req, res) => {
     const moves = movesRes.rows.map((m, i) => ({
       move_number: i + 1,
       player_id: m.player_id,
+      target_player_id: m.target_player_id,
       row: m.move_row,
       col: m.move_col,
       result: m.result,

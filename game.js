@@ -7,6 +7,16 @@
     playerId: 'battleship.playerId',
     username: 'battleship.username',
   };
+
+  function getStoredIdentity(key) {
+    // Keep identity per-tab to avoid two-player local testing sessions
+    // overwriting each other in shared localStorage.
+    return sessionStorage.getItem(key);
+  }
+
+  function setStoredIdentity(key, value) {
+    sessionStorage.setItem(key, value);
+  }
   const CLASS_SERVER_OPTIONS = [
     { label: 'Localhost (3000)', url: 'http://localhost:3000' },
     { label: 'Team 0x03 (Render)', url: 'https://finalproject3750.onrender.com' },
@@ -90,6 +100,7 @@
     game: null,
     vertical: false,
     localShips: [],
+    globallyUsedCells: new Set(),
   };
 
   function setStatus(msg) { ui.status.textContent = msg; }
@@ -266,12 +277,10 @@
     state.participants = gamePlayers.map((p) => p.player_id);
     if (!state.participants.includes(state.playerId)) state.participants.push(state.playerId);
 
+    // Move payload does not reliably include target ownership for misses.
+    // Do not render incoming misses on your fleet to avoid showing
+    // another player's miss on the wrong board.
     const incomingMisses = new Set();
-    for (const m of state.moves) {
-      if (m.player_id === state.playerId) continue;
-      if (m.result !== 'miss') continue;
-      if (state.participants.length === 2) incomingMisses.add(key(m.row, m.col));
-    }
 
     const expectedId = game.current_turn_player_id;
     const isMyTurn = game.status === 'playing' && expectedId === state.playerId;
@@ -292,7 +301,7 @@
 
     ui.opponentGrids.innerHTML = '';
     const myMoves = state.moves.filter((m) => m.player_id === state.playerId);
-    const globallyUsedCells = new Set(state.moves.map((m) => key(m.row, m.col)));
+    state.globallyUsedCells = new Set(state.moves.map((m) => key(m.row, m.col)));
     for (const pid of state.participants) {
       if (pid === state.playerId) continue;
       const block = document.createElement('div');
@@ -311,11 +320,6 @@
         const coord = key(m.row, m.col);
         if (m.result === 'hit') marks.hits.add(coord);
         if (m.result === 'miss') marks.misses.add(coord);
-      }
-      // Server enforces one shot per coordinate globally for the game.
-      // Show globally-used cells so a "already fired" rejection is visible in UI.
-      for (const coord of globallyUsedCells) {
-        if (!marks.hits.has(coord)) marks.misses.add(coord);
       }
       paintGrid(
         grid,
@@ -398,6 +402,10 @@
   }
 
   async function onFire(_targetPlayerId, r, c) {
+    if (state.globallyUsedCells.has(key(r, c))) {
+      setStatus('That coordinate was already used in this game.');
+      return;
+    }
     try {
       const before = state.moves.filter((m) => m.player_id === state.playerId && m.result === 'hit').length;
       const out = await apiService.post(`/api/games/${state.currentGameId}/fire`, { player_id: state.playerId, row: r, col: c });
@@ -447,9 +455,9 @@
       state.connected = true;
       setStatus('Server reachable. Register or continue.');
       showScreen('register');
-      const savedUsername = localStorage.getItem(STORAGE_KEYS.username) || '';
+      const savedUsername = getStoredIdentity(STORAGE_KEYS.username) || '';
       if (savedUsername) ui.usernameInput.value = savedUsername;
-      const savedId = localStorage.getItem(STORAGE_KEYS.playerId);
+      const savedId = getStoredIdentity(STORAGE_KEYS.playerId);
       if (savedId) {
         const parsedId = parseInt(savedId, 10);
         if (!isNaN(parsedId)) {
@@ -473,8 +481,8 @@
       state.playerId = out.player_id;
       state.username = username;
       state.playersById[state.playerId] = state.username;
-      localStorage.setItem(STORAGE_KEYS.playerId, String(state.playerId));
-      localStorage.setItem(STORAGE_KEYS.username, state.username);
+      setStoredIdentity(STORAGE_KEYS.playerId, String(state.playerId));
+      setStoredIdentity(STORAGE_KEYS.username, state.username);
       ui.identityLine.textContent = `Logged in as ${state.username} (#${state.playerId})`;
       setStatus('Registration complete. Entering lobby.');
       showScreen('lobby');

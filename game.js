@@ -349,8 +349,15 @@
     }
     const incomingHits = getIncomingHitsOnMe(myShipSet);
 
-    const rawPlayers = await apiService.get(`/api/games/${state.currentGameId}/players`);
-    const gamePlayers = normalizeGamePlayers(rawPlayers);
+    let gamePlayers = [];
+    try {
+      const rawPlayers = await apiService.get(`/api/games/${state.currentGameId}/players`);
+      gamePlayers = normalizeGamePlayers(rawPlayers);
+    } catch (err) {
+      // Some teams do not expose /games/:id/players; fall back to game detail payload.
+      if (!(err && err.status === 404)) throw err;
+      gamePlayers = normalizeGamePlayers(game.players || []);
+    }
     state.participants = gamePlayers
       .map((p) => p.player_id ?? p.playerId ?? p.id)
       .filter((id) => Number.isInteger(id));

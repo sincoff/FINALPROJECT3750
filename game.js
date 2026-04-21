@@ -53,6 +53,34 @@
     return { setBaseUrl, getBaseUrl, get, post, normalize };
   })();
 
+  function normalizeServerRoot(url) {
+    return apiService.normalize(url).replace(/\/api$/i, '');
+  }
+
+  async function fetchWithTimeout(url, options = {}, timeoutMs = 5000) {
+    const ctrl = new AbortController();
+    const id = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      return await fetch(url, { ...options, signal: ctrl.signal });
+    } finally {
+      clearTimeout(id);
+    }
+  }
+
+  async function probeServerApi(baseUrl) {
+    const probes = ['/api', '/api/', '/api/health', '/api/version', '/api/players'];
+    for (const path of probes) {
+      try {
+        const res = await fetchWithTimeout(`${baseUrl}${path}`, { method: 'GET' }, 5000);
+        // Any non-5xx response indicates the API route is reachable and responding.
+        if (res.status < 500) return true;
+      } catch (_) {
+        // Try next probe.
+      }
+    }
+    return false;
+  }
+
   const ui = {
     status: document.getElementById('status'),
     serverSelect: document.getElementById('server-select'),
@@ -455,17 +483,19 @@
 
   async function connectServer() {
     const selected = ui.serverInput.value.trim() || ui.serverSelect.value.trim();
-    const normalized = apiService.normalize(selected);
-    if (!normalized) {
+    const rootBase = normalizeServerRoot(selected);
+    if (!rootBase) {
       setStatus('Enter a valid server URL.');
       return;
     }
-    apiService.setBaseUrl(normalized);
     try {
-      await apiService.get('/api/players');
-      updateServerIndicator(true, 'Connected');
+      const isReachable = await probeServerApi(rootBase);
+      if (!isReachable) throw new Error('unreachable');
+      apiService.setBaseUrl(rootBase);
+      ui.serverInput.value = rootBase;
+      updateServerIndicator(true, `Connected: ${rootBase}`);
       state.connected = true;
-      setStatus('Server reachable. Register or continue.');
+      setStatus(`Connected to ${rootBase}. Register or continue.`);
       showScreen('register');
       const savedUsername = getStoredIdentity(STORAGE_KEYS.username) || '';
       if (savedUsername) ui.usernameInput.value = savedUsername;
@@ -480,8 +510,9 @@
       }
       await refreshPlayersDirectory();
     } catch (_) {
+      state.connected = false;
       updateServerIndicator(false, 'Offline');
-      setStatus('Cannot reach that server.');
+      setStatus('Cannot reach that server. Check URL format (use server root, not a game route) and verify CORS/API is enabled.');
     }
   }
 

@@ -6,6 +6,7 @@
     baseUrl: 'battleship.baseUrl',
     playerId: 'battleship.playerId',
     username: 'battleship.username',
+    theme: 'battleship.theme',
   };
 
   function getStoredIdentity(key) {
@@ -86,6 +87,7 @@
     serverSelect: document.getElementById('server-select'),
     serverInput: document.getElementById('server-input'),
     connectBtn: document.getElementById('connect-btn'),
+    themeToggleBtn: document.getElementById('theme-toggle-btn'),
     serverIndicator: document.getElementById('server-indicator'),
     serverIndicatorText: document.getElementById('server-indicator-text'),
     registerScreen: document.getElementById('register-screen'),
@@ -133,6 +135,14 @@
 
   function setStatus(msg) { ui.status.textContent = msg; }
   function key(r, c) { return `${r},${c}`; }
+  function applyTheme(theme) {
+    const mode = theme === 'light' ? 'light' : 'dark';
+    document.body.classList.toggle('light-mode', mode === 'light');
+    localStorage.setItem(STORAGE_KEYS.theme, mode);
+    if (ui.themeToggleBtn) {
+      ui.themeToggleBtn.textContent = mode === 'light' ? 'DARK MODE' : 'LIGHT MODE';
+    }
+  }
   function mapFriendlyError(err) {
     const msg = (err && err.message) || '';
     if (/Not your turn/i.test(msg)) return 'Hold fire — it is not your turn.';
@@ -641,6 +651,12 @@
 
   function bindEvents() {
     ui.connectBtn.addEventListener('click', connectServer);
+    if (ui.themeToggleBtn) {
+      ui.themeToggleBtn.addEventListener('click', () => {
+        const next = document.body.classList.contains('light-mode') ? 'dark' : 'light';
+        applyTheme(next);
+      });
+    }
     ui.registerBtn.addEventListener('click', registerPlayer);
     ui.createGameBtn.addEventListener('click', createGame);
     ui.refreshLobbyBtn.addEventListener('click', () => renderLobby().catch(() => {}));
@@ -656,6 +672,7 @@
   }
 
   initServerOptions();
+  applyTheme(localStorage.getItem(STORAGE_KEYS.theme) || 'dark');
   bindEvents();
   showScreen('none');
 })();

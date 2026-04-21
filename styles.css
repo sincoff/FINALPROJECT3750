@@ -12,6 +12,18 @@
   --font-mono: 'Share Tech Mono', monospace;
 }
 
+body.light-mode {
+  --radar-green: #0b6b46;
+  --radar-green-glow: rgba(16, 153, 98, 0.22);
+  --radar-bg: #f7fbf8;
+  --radar-panel-bg: rgba(255, 255, 255, 0.95);
+  --radar-border: rgba(11, 107, 70, 0.25);
+  --text-dim: rgba(11, 107, 70, 0.75);
+  --hit-color: #12a96a;
+  --miss-color: #e04b5a;
+  --ship-color: #1f8b60;
+}
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
   font-family: var(--font-mono);
@@ -28,6 +40,16 @@ body {
 .vignette { position: absolute; inset: 0; background: radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.7) 100%); }
 .grid-overlay { position: absolute; inset: 0; background-image: linear-gradient(var(--radar-border) 1px, transparent 1px), linear-gradient(90deg, var(--radar-border) 1px, transparent 1px); background-size: 40px 40px; opacity: 0.08; }
 @keyframes scan { 0% { transform: translateY(-100%); } 100% { transform: translateY(100%); } }
+
+body.light-mode .radar-bg {
+  background: radial-gradient(ellipse 85% 85% at 50% 45%, #ffffff 0%, #eef6f1 100%);
+}
+body.light-mode .scan-line {
+  background: linear-gradient(to bottom, transparent 0%, rgba(16, 153, 98, 0.05) 50%, transparent 100%);
+}
+body.light-mode .vignette {
+  background: radial-gradient(ellipse at center, transparent 45%, rgba(77, 116, 95, 0.16) 100%);
+}
 
 .header {
   position: relative;

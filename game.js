@@ -269,7 +269,21 @@
   }
 
   async function refreshStats() {
-    const s = await apiService.get(`/api/players/${state.playerId}/stats`);
+    let s = null;
+    try {
+      s = await apiService.get(`/api/players/${state.playerId}/stats`);
+    } catch (err) {
+      // Some team servers may not expose identical stats routes/shape.
+      if (!(err && err.status === 404)) throw err;
+      s = {
+        wins: 0,
+        losses: 0,
+        games_played: 0,
+        total_shots: 0,
+        total_hits: 0,
+        accuracy: 0,
+      };
+    }
     ui.statsPanel.innerHTML = `
       <div class="stat-item"><span class="stat-value">${s.wins}</span><span class="stat-label">WINS</span></div>
       <div class="stat-item"><span class="stat-value">${s.losses}</span><span class="stat-label">LOSSES</span></div>
@@ -291,8 +305,17 @@
     state.moves = moves;
     state.gridSize = game.grid_size;
 
-    const myShipsData = await apiService.get(`/api/games/${state.currentGameId}/ships?player_id=${state.playerId}&requester_id=${state.playerId}`);
-    const serverShips = myShipsData.ships || [];
+    let serverShips = [];
+    try {
+      const myShipsData = await apiService.get(
+        `/api/games/${state.currentGameId}/ships?player_id=${state.playerId}&requester_id=${state.playerId}`
+      );
+      serverShips = myShipsData.ships || [];
+    } catch (err) {
+      // Cross-team compatibility: some APIs expose placement via /place but not /ships.
+      if (!(err && err.status === 404)) throw err;
+      serverShips = [];
+    }
     const serverPlaced = serverShips.length > 0;
     const myShipSet = new Set(serverShips.map((s) => key(s.row, s.col)));
     if (!serverPlaced && game.status === 'waiting_setup' && state.localShips.length > 0) {
@@ -424,6 +447,10 @@
       try {
         await apiService.post(`/api/games/${state.currentGameId}/ships`, { player_id: state.playerId, ships });
       } catch (shipErr) {
+        // Compatibility fallback for servers that use /place instead of /ships.
+        if (shipErr && shipErr.status === 404) {
+          await apiService.post(`/api/games/${state.currentGameId}/place`, { player_id: state.playerId, ships });
+        } else
         // If ships were already submitted from this client/tab previously, continue gracefully.
         if (!/already placed ships/i.test((shipErr && shipErr.message) || '')) throw shipErr;
       }
@@ -541,7 +568,8 @@
       const gridSize = parseInt(ui.createGridSize.value, 10) || 10;
       const maxPlayers = parseInt(ui.createMaxPlayers.value, 10) || 3;
       const out = await apiService.post('/api/games', { creator_id: state.playerId, grid_size: gridSize, max_players: maxPlayers });
-      state.currentGameId = out.game_id;
+      state.currentGameId = out.game_id ?? out.id;
+      if (!state.currentGameId) throw new Error('Connected server returned an unsupported game payload');
       state.gridSize = gridSize;
       state.localShips = [];
       ui.placementShipLabel.textContent = '1x4';

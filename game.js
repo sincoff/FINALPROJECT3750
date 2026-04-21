@@ -146,6 +146,22 @@
     return msg || 'Something went wrong. Try again.';
   }
 
+  function normalizeMovesPayload(payload) {
+    if (Array.isArray(payload)) return payload;
+    if (!payload || typeof payload !== 'object') return [];
+    if (Array.isArray(payload.moves)) return payload.moves;
+    if (Array.isArray(payload.data)) return payload.data;
+    return [];
+  }
+
+  function normalizeGamePlayers(payload) {
+    if (Array.isArray(payload)) return payload;
+    if (!payload || typeof payload !== 'object') return [];
+    if (Array.isArray(payload.players)) return payload.players;
+    if (Array.isArray(payload.data)) return payload.data;
+    return [];
+  }
+
   function buildGrid(container, gridSize, onClick) {
     container.innerHTML = '';
     container.style.gridTemplateColumns = `repeat(${gridSize}, var(--cell-size))`;
@@ -297,12 +313,20 @@
   async function renderGame() {
     if (!state.currentGameId) return;
     await refreshPlayersDirectory();
-    const [game, moves] = await Promise.all([
+    const [game, rawMoves] = await Promise.all([
       apiService.get(`/api/games/${state.currentGameId}`),
       apiService.get(`/api/games/${state.currentGameId}/moves`),
     ]);
     state.game = game;
-    state.moves = moves;
+    state.moves = normalizeMovesPayload(rawMoves).map((m, i) => ({
+      move_number: m.move_number != null ? m.move_number : i + 1,
+      player_id: m.player_id ?? m.playerId ?? m.shooter_id ?? null,
+      target_player_id: m.target_player_id ?? m.targetPlayerId ?? null,
+      row: m.row ?? m.move_row ?? m.r,
+      col: m.col ?? m.move_col ?? m.c,
+      result: m.result,
+      timestamp: m.timestamp ?? m.created_at ?? new Date().toISOString(),
+    }));
     state.gridSize = game.grid_size;
 
     let serverShips = [];
@@ -325,8 +349,11 @@
     }
     const incomingHits = getIncomingHitsOnMe(myShipSet);
 
-    const gamePlayers = await apiService.get(`/api/games/${state.currentGameId}/players`);
-    state.participants = gamePlayers.map((p) => p.player_id);
+    const rawPlayers = await apiService.get(`/api/games/${state.currentGameId}/players`);
+    const gamePlayers = normalizeGamePlayers(rawPlayers);
+    state.participants = gamePlayers
+      .map((p) => p.player_id ?? p.playerId ?? p.id)
+      .filter((id) => Number.isInteger(id));
     if (!state.participants.includes(state.playerId)) state.participants.push(state.playerId);
 
     // Miss ownership is explicit when target_player_id is present.

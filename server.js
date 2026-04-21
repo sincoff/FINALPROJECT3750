@@ -188,8 +188,11 @@ async function initDatabase() {
         created_at TIMESTAMP DEFAULT NOW()
       );
     `);
+    // Duplicate-shot policy should be per shooter, not global per game cell.
+    // This lets different players legally target the same coordinates.
+    await client.query('DROP INDEX IF EXISTS moves_game_cell_unique');
     await client.query(
-      'CREATE UNIQUE INDEX IF NOT EXISTS moves_game_cell_unique ON moves(game_id, move_row, move_col)'
+      'CREATE UNIQUE INDEX IF NOT EXISTS moves_game_player_cell_unique ON moves(game_id, player_id, move_row, move_col)'
     );
     await client.query('TRUNCATE players, games, game_players, ships, moves RESTART IDENTITY CASCADE');
     console.log('Database tables initialized.');

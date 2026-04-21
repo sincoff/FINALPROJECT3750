@@ -7,16 +7,41 @@
     playerId: 'battleship.playerId',
     username: 'battleship.username',
     theme: 'battleship.theme',
+    identitiesByServer: 'battleship.identitiesByServer',
   };
 
   function getStoredIdentity(key) {
-    // Keep identity per-tab to avoid two-player local testing sessions
-    // overwriting each other in shared localStorage.
-    return sessionStorage.getItem(key);
+    // Legacy keys (kept for backward compatibility).
+    return sessionStorage.getItem(key) || localStorage.getItem(key);
   }
 
   function setStoredIdentity(key, value) {
     sessionStorage.setItem(key, value);
+    localStorage.setItem(key, value);
+  }
+
+  function getServerIdentity(baseUrl) {
+    if (!baseUrl) return null;
+    let all = {};
+    try {
+      all = JSON.parse(localStorage.getItem(STORAGE_KEYS.identitiesByServer) || '{}');
+    } catch (_) {}
+    const hit = all[baseUrl];
+    if (!hit || typeof hit !== 'object') return null;
+    const playerId = parseInt(hit.playerId, 10);
+    const username = typeof hit.username === 'string' ? hit.username : '';
+    if (!Number.isInteger(playerId) || !username) return null;
+    return { playerId, username };
+  }
+
+  function setServerIdentity(baseUrl, playerId, username) {
+    if (!baseUrl || !Number.isInteger(playerId) || !username) return;
+    let all = {};
+    try {
+      all = JSON.parse(localStorage.getItem(STORAGE_KEYS.identitiesByServer) || '{}');
+    } catch (_) {}
+    all[baseUrl] = { playerId, username };
+    localStorage.setItem(STORAGE_KEYS.identitiesByServer, JSON.stringify(all));
   }
   const CLASS_SERVER_OPTIONS = [
     { label: 'Localhost (3000)', url: 'http://localhost:3000' },
@@ -568,16 +593,16 @@
       state.connected = true;
       setStatus(`Connected to ${rootBase}. Register or continue.`);
       showScreen('register');
-      const savedUsername = getStoredIdentity(STORAGE_KEYS.username) || '';
+      const savedForServer = getServerIdentity(rootBase);
+      const savedUsername = (savedForServer && savedForServer.username) || getStoredIdentity(STORAGE_KEYS.username) || '';
       if (savedUsername) ui.usernameInput.value = savedUsername;
-      const savedId = getStoredIdentity(STORAGE_KEYS.playerId);
-      if (savedId) {
-        const parsedId = parseInt(savedId, 10);
-        if (!isNaN(parsedId)) {
-          state.playerId = parsedId;
-          state.username = savedUsername;
-          ui.identityLine.textContent = `Saved identity: ${state.username || 'Unknown'} (#${state.playerId})`;
-        }
+      const savedId = (savedForServer && savedForServer.playerId) || parseInt(getStoredIdentity(STORAGE_KEYS.playerId), 10);
+      if (Number.isInteger(savedId) && savedUsername) {
+        state.playerId = savedId;
+        state.username = savedUsername;
+        ui.identityLine.textContent = `Saved identity: ${state.username} (#${state.playerId})`;
+      } else {
+        ui.identityLine.textContent = '';
       }
       await refreshPlayersDirectory();
     } catch (_) {
@@ -591,12 +616,26 @@
     const username = ui.usernameInput.value.trim();
     if (!username) { setStatus('Enter a username first.'); return; }
     try {
-      const out = await apiService.post('/api/players', { username });
-      state.playerId = out.player_id;
+      let out = null;
+      try {
+        out = await apiService.post('/api/players', { username });
+      } catch (err) {
+        // Some servers reject duplicate usernames instead of returning existing player_id.
+        if (!(err && err.status === 409)) throw err;
+        const players = await apiService.get('/api/players');
+        const found = (Array.isArray(players) ? players : [])
+          .find((p) => (p.username || p.display_name || '').toLowerCase() === username.toLowerCase());
+        const existingId = found ? (found.id ?? found.player_id) : null;
+        if (!Number.isInteger(existingId)) throw err;
+        out = { player_id: existingId };
+      }
+      state.playerId = parseInt(out.player_id, 10);
+      if (!Number.isInteger(state.playerId)) throw new Error('Server returned invalid player id');
       state.username = username;
       state.playersById[state.playerId] = state.username;
       setStoredIdentity(STORAGE_KEYS.playerId, String(state.playerId));
       setStoredIdentity(STORAGE_KEYS.username, state.username);
+      setServerIdentity(apiService.getBaseUrl(), state.playerId, state.username);
       ui.identityLine.textContent = `Logged in as ${state.username} (#${state.playerId})`;
       setStatus('Registration complete. Entering lobby.');
       showScreen('lobby');

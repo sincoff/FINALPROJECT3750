@@ -194,8 +194,9 @@ async function initDatabase() {
     await client.query(
       'CREATE UNIQUE INDEX IF NOT EXISTS moves_game_player_cell_unique ON moves(game_id, player_id, move_row, move_col)'
     );
-    await client.query('TRUNCATE players, games, game_players, ships, moves RESTART IDENTITY CASCADE');
-    console.log('Database tables initialized.');
+    // Preserve persistent player/game history across restarts by default.
+    // For a clean database, use POST /api/reset explicitly.
+    console.log('Database tables initialized (data preserved).');
   } finally {
     client.release();
   }

@@ -278,10 +278,20 @@
     state.participants = gamePlayers.map((p) => p.player_id);
     if (!state.participants.includes(state.playerId)) state.participants.push(state.playerId);
 
-    // Move payload does not reliably include target ownership for misses.
-    // Do not render incoming misses on your fleet to avoid showing
-    // another player's miss on the wrong board.
+    // Miss ownership is explicit when target_player_id is present.
+    // In 2-player games, legacy miss events may have null target_player_id,
+    // so infer they were aimed at "the other player" for correct UX.
     const incomingMisses = new Set();
+    const twoPlayerGame = state.participants.length === 2;
+    for (const m of state.moves) {
+      if (m.player_id === state.playerId) continue;
+      if (m.result !== 'miss') continue;
+      const targetedMe = m.target_player_id != null
+        ? m.target_player_id === state.playerId
+        : twoPlayerGame;
+      if (!targetedMe) continue;
+      incomingMisses.add(key(m.row, m.col));
+    }
 
     const expectedId = game.current_turn_player_id;
     const isMyTurn = game.status === 'playing' && expectedId === state.playerId;

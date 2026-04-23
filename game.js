@@ -204,6 +204,14 @@
     return [];
   }
 
+  function normalizeGamesPayload(payload) {
+    if (Array.isArray(payload)) return payload;
+    if (!payload || typeof payload !== 'object') return [];
+    if (Array.isArray(payload.games)) return payload.games;
+    if (Array.isArray(payload.data)) return payload.data;
+    return [];
+  }
+
   function getPlacedShipLengths() {
     return new Set(state.localShips.map((s) => s.length));
   }
@@ -460,7 +468,14 @@
 
   async function renderLobby() {
     await refreshPlayersDirectory();
-    const games = await apiService.get('/api/games');
+    const rawGames = await apiService.get('/api/games');
+    const games = normalizeGamesPayload(rawGames).map((g) => ({
+      id: g.id ?? g.game_id,
+      status: g.status ?? 'unknown',
+      player_count: g.player_count ?? g.active_players ?? 0,
+      max_players: g.max_players ?? g.maxPlayers ?? '?',
+      grid_size: g.grid_size ?? g.gridSize ?? '?',
+    }));
     ui.gamesList.innerHTML = '';
     if (!games.length) {
       ui.gamesList.innerHTML = '<div class="list-row">No games yet.</div>';

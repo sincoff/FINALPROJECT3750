@@ -131,6 +131,7 @@
     yourGrid: document.getElementById('your-grid'),
     opponentGrids: document.getElementById('opponent-grids'),
     placementControls: document.getElementById('placement-controls'),
+    shipPalette: document.getElementById('ship-palette'),
     placementShipLabel: document.getElementById('placement-ship-label'),
     orientH: document.getElementById('orient-h'),
     orientV: document.getElementById('orient-v'),
@@ -156,6 +157,7 @@
     vertical: false,
     localShips: [],
     myUsedCells: new Set(),
+    draggingShipLength: null,
   };
 
   function setStatus(msg) { ui.status.textContent = msg; }
@@ -197,6 +199,126 @@
     return [];
   }
 
+  function getPlacedShipLengths() {
+    return new Set(state.localShips.map((s) => s.length));
+  }
+
+  function updatePlacementLabel() {
+    const placed = getPlacedShipLengths();
+    const next = SHIP_SPECS.find((len) => !placed.has(len));
+    ui.placementShipLabel.textContent = next ? `1x${next}` : 'READY';
+  }
+
+  function renderShipPalette() {
+    if (!ui.shipPalette) return;
+    ui.shipPalette.innerHTML = '';
+    const placed = getPlacedShipLengths();
+    for (const len of SHIP_SPECS) {
+      const token = document.createElement('div');
+      const isPlaced = placed.has(len);
+      token.className = `ship-token${isPlaced ? ' placed' : ''}`;
+      token.draggable = !isPlaced;
+      token.dataset.length = String(len);
+      token.innerHTML = `<span>Ship ${len}</span><span class="ship-cells">${'<i></i>'.repeat(len)}</span>`;
+      if (!isPlaced) {
+        token.addEventListener('dragstart', (e) => {
+          state.draggingShipLength = len;
+          if (e.dataTransfer) e.dataTransfer.setData('text/plain', String(len));
+        });
+        token.addEventListener('dragend', () => {
+          state.draggingShipLength = null;
+          clearPlacementGhostPreview();
+        });
+      }
+      ui.shipPalette.appendChild(token);
+    }
+  }
+
+  function tryPlaceShipAt(r, c, shipLength) {
+    if (!shipLength || !Number.isInteger(shipLength) || shipLength < 1) return false;
+    if (getPlacedShipLengths().has(shipLength)) return false;
+    const occupied = new Set();
+    for (const ship of state.localShips) ship.forEach((p) => occupied.add(key(p.row, p.col)));
+    const coords = [];
+    for (let i = 0; i < shipLength; i++) {
+      const rr = state.vertical ? r + i : r;
+      const cc = state.vertical ? c : c + i;
+      if (rr < 0 || rr >= state.gridSize || cc < 0 || cc >= state.gridSize) return false;
+      if (occupied.has(key(rr, cc))) return false;
+      coords.push({ row: rr, col: cc });
+    }
+    state.localShips.push(coords);
+    updatePlacementLabel();
+    renderPlacementPreview();
+    return true;
+  }
+
+  function clearPlacementGhostPreview() {
+    if (!ui.yourGrid) return;
+    ui.yourGrid.querySelectorAll('.cell.preview-valid, .cell.preview-invalid').forEach((el) => {
+      el.classList.remove('preview-valid', 'preview-invalid');
+    });
+  }
+
+  function showPlacementGhostPreview(r, c, shipLength) {
+    clearPlacementGhostPreview();
+    if (!Number.isInteger(shipLength) || shipLength < 1) return;
+    if (getPlacedShipLengths().has(shipLength)) return;
+
+    const occupied = new Set();
+    for (const ship of state.localShips) ship.forEach((p) => occupied.add(key(p.row, p.col)));
+
+    const coords = [];
+    let valid = true;
+    for (let i = 0; i < shipLength; i++) {
+      const rr = state.vertical ? r + i : r;
+      const cc = state.vertical ? c : c + i;
+      if (rr < 0 || rr >= state.gridSize || cc < 0 || cc >= state.gridSize) {
+        valid = false;
+        continue;
+      }
+      if (occupied.has(key(rr, cc))) valid = false;
+      coords.push({ row: rr, col: cc });
+    }
+
+    coords.forEach(({ row, col }) => {
+      const cell = ui.yourGrid.querySelector(`.cell[data-row="${row}"][data-col="${col}"]`);
+      if (!cell) return;
+      cell.classList.add(valid ? 'preview-valid' : 'preview-invalid');
+    });
+  }
+
+  function bindDragDropPlacement(canPlaceShips) {
+    clearPlacementGhostPreview();
+    if (!canPlaceShips) return;
+    ui.yourGrid.addEventListener('dragleave', (e) => {
+      if (!ui.yourGrid.contains(e.relatedTarget)) clearPlacementGhostPreview();
+    });
+    ui.yourGrid.addEventListener('drop', () => clearPlacementGhostPreview());
+    const cells = ui.yourGrid.querySelectorAll('.cell');
+    cells.forEach((cell) => {
+      cell.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        const lengthFromDrag = parseInt(e.dataTransfer ? e.dataTransfer.getData('text/plain') : '', 10);
+        const shipLength = Number.isInteger(lengthFromDrag) ? lengthFromDrag : state.draggingShipLength;
+        const row = parseInt(cell.dataset.row, 10);
+        const col = parseInt(cell.dataset.col, 10);
+        showPlacementGhostPreview(row, col, shipLength);
+      });
+      cell.addEventListener('drop', (e) => {
+        e.preventDefault();
+        const lengthFromDrag = parseInt(e.dataTransfer ? e.dataTransfer.getData('text/plain') : '', 10);
+        const shipLength = Number.isInteger(lengthFromDrag) ? lengthFromDrag : state.draggingShipLength;
+        const row = parseInt(cell.dataset.row, 10);
+        const col = parseInt(cell.dataset.col, 10);
+        if (!Number.isInteger(row) || !Number.isInteger(col)) return;
+        const placed = tryPlaceShipAt(row, col, shipLength);
+        clearPlacementGhostPreview();
+        if (!placed) setStatus('Invalid placement for that ship. Try another position or orientation.');
+      });
+    });
+  }
+
   function buildGrid(container, gridSize, onClick) {
     container.innerHTML = '';
     container.style.gridTemplateColumns = `repeat(${gridSize}, var(--cell-size))`;
@@ -223,6 +345,8 @@
         const k = key(r, c);
         const cell = document.createElement('div');
         cell.className = 'cell';
+        cell.dataset.row = String(r);
+        cell.dataset.col = String(c);
         if (shipCells.has(k)) cell.classList.add('ship');
         if (hitCells.has(k)) cell.classList.add('hit');
         if (missCells.has(k)) cell.classList.add('miss');
@@ -427,8 +551,10 @@
     const canPlaceShips =
       game.status === 'waiting_setup' && !serverPlaced && state.localShips.length < SHIP_SPECS.length;
     ui.placementControls.classList.toggle('hidden', game.status !== 'waiting_setup' || serverPlaced);
+    renderShipPalette();
 
     paintGrid(ui.yourGrid, state.gridSize, myShipSet, incomingHits, incomingMisses, canPlaceShips, onPlaceCellClick);
+    bindDragDropPlacement(canPlaceShips);
 
     ui.opponentGrids.innerHTML = '';
     const myMoves = state.moves.filter((m) => m.player_id === state.playerId);
@@ -485,25 +611,16 @@
   function onPlaceCellClick(r, c) {
     const shipLength = SHIP_SPECS[state.localShips.length];
     if (!shipLength) return;
-    const occupied = new Set();
-    for (const ship of state.localShips) ship.forEach((p) => occupied.add(key(p.row, p.col)));
-    const coords = [];
-    for (let i = 0; i < shipLength; i++) {
-      const rr = state.vertical ? r + i : r;
-      const cc = state.vertical ? c : c + i;
-      if (rr < 0 || rr >= state.gridSize || cc < 0 || cc >= state.gridSize) return;
-      if (occupied.has(key(rr, cc))) return;
-      coords.push({ row: rr, col: cc });
-    }
-    state.localShips.push(coords);
-    ui.placementShipLabel.textContent = SHIP_SPECS[state.localShips.length] ? `1x${SHIP_SPECS[state.localShips.length]}` : 'READY';
-    renderPlacementPreview();
+    const placed = tryPlaceShipAt(r, c, shipLength);
+    if (!placed) setStatus('Invalid placement for that ship. Try another position or orientation.');
   }
 
   function renderPlacementPreview() {
     const shipSet = new Set();
     for (const s of state.localShips) for (const p of s) shipSet.add(key(p.row, p.col));
     paintGrid(ui.yourGrid, state.gridSize, shipSet, new Set(), new Set(), true, onPlaceCellClick);
+    bindDragDropPlacement(state.localShips.length < SHIP_SPECS.length);
+    renderShipPalette();
   }
 
   async function submitShips() {
@@ -530,6 +647,8 @@
         if (!(startErr && startErr.status === 400)) throw startErr;
       }
       state.localShips = [];
+      updatePlacementLabel();
+      renderShipPalette();
       setStatus('Ships submitted. Waiting for other players to join/place ships.');
       await renderGame();
     } catch (err) {
@@ -655,7 +774,8 @@
       if (!state.currentGameId) throw new Error('Connected server returned an unsupported game payload');
       state.gridSize = gridSize;
       state.localShips = [];
-      ui.placementShipLabel.textContent = '1x4';
+      updatePlacementLabel();
+      renderShipPalette();
       showScreen('game');
       setStatus(`Created game #${out.game_id}. Place ships.`);
       startGamePolling();
@@ -667,6 +787,8 @@
   async function backToLobby() {
     state.currentGameId = null;
     state.localShips = [];
+    updatePlacementLabel();
+    renderShipPalette();
     showScreen('lobby');
     await renderLobby();
     startLobbyPolling();
@@ -704,7 +826,7 @@
     ui.orientV.addEventListener('click', () => { state.vertical = true; ui.orientV.classList.add('active-mini'); ui.orientH.classList.remove('active-mini'); });
     ui.clearShipsBtn.addEventListener('click', () => {
       state.localShips = [];
-      ui.placementShipLabel.textContent = '1x4';
+      updatePlacementLabel();
       renderPlacementPreview();
     });
     ui.submitShipsBtn.addEventListener('click', submitShips);
@@ -712,6 +834,8 @@
 
   initServerOptions();
   applyTheme(localStorage.getItem(STORAGE_KEYS.theme) || 'dark');
+  updatePlacementLabel();
+  renderShipPalette();
   bindEvents();
   showScreen('none');
 })();

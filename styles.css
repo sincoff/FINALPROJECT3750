@@ -93,6 +93,10 @@ input, select {
 }
 .btn-radar:hover { background: var(--radar-green-glow); }
 .active-mini { background: var(--radar-green-glow); }
+.btn-radar:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 
 .indicator {
   width: 22px;
@@ -156,6 +160,48 @@ input, select {
 .cell.hit { background: var(--hit-color); box-shadow: 0 0 12px var(--radar-green-glow); }
 .cell.miss { background: var(--miss-color); }
 .cell.fireable:hover { cursor: crosshair; background: rgba(0, 255, 136, 0.16); }
+.cell.preview-valid {
+  background: rgba(0, 255, 136, 0.24);
+  box-shadow: inset 0 0 0 1px rgba(0, 255, 136, 0.55);
+}
+.cell.preview-invalid {
+  background: rgba(224, 75, 90, 0.28);
+  box-shadow: inset 0 0 0 1px rgba(224, 75, 90, 0.65);
+}
+
+.ship-palette {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.35rem 0 0.5rem;
+}
+.ship-token {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  border: 1px solid var(--radar-border);
+  border-radius: 5px;
+  padding: 0.35rem 0.5rem;
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--radar-green);
+  cursor: grab;
+  user-select: none;
+}
+.ship-token .ship-cells {
+  display: inline-flex;
+  gap: 2px;
+}
+.ship-token .ship-cells i {
+  width: 10px;
+  height: 10px;
+  border: 1px solid var(--radar-border);
+  background: rgba(0, 204, 106, 0.25);
+}
+.ship-token.placed {
+  opacity: 0.45;
+  text-decoration: line-through;
+  cursor: not-allowed;
+}
 
 .opponent-block h4 { margin-bottom: 0.4rem; color: var(--text-dim); font-size: 0.8rem; }
 .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.6rem; }

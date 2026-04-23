@@ -223,7 +223,19 @@
       if (!isPlaced) {
         token.addEventListener('dragstart', (e) => {
           state.draggingShipLength = len;
-          if (e.dataTransfer) e.dataTransfer.setData('text/plain', String(len));
+          if (e.dataTransfer) {
+            e.dataTransfer.setData('text/plain', String(len));
+            // Hide browser drag preview so only board ghost cells are visible.
+            const ghost = document.createElement('div');
+            ghost.style.width = '1px';
+            ghost.style.height = '1px';
+            ghost.style.opacity = '0';
+            ghost.style.position = 'absolute';
+            ghost.style.top = '-1000px';
+            document.body.appendChild(ghost);
+            e.dataTransfer.setDragImage(ghost, 0, 0);
+            setTimeout(() => ghost.remove(), 0);
+          }
         });
         token.addEventListener('dragend', () => {
           state.draggingShipLength = null;

@@ -213,6 +213,35 @@ input, select {
 .explosion.flash { animation: flash 0.35s ease-out; }
 @keyframes flash { from { opacity: 0.55; } to { opacity: 0; } }
 
+.result-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(5, 18, 12, 0.6);
+}
+.result-card {
+  width: min(480px, 92vw);
+  border: 1px solid var(--radar-border);
+  border-radius: 10px;
+  padding: 1.1rem;
+  text-align: center;
+  background: var(--radar-panel-bg);
+  box-shadow: 0 0 25px var(--radar-green-glow);
+}
+.result-card h2 {
+  font-family: var(--font-display);
+  letter-spacing: 0.12em;
+  margin-bottom: 0.55rem;
+}
+.result-card p {
+  color: var(--text-dim);
+  margin-bottom: 0.9rem;
+}
+
 @media (max-width: 980px) {
   .game-layout, .game-layout.lower { grid-template-columns: 1fr; }
   .radar-grid { --cell-size: min(6.6vw, 30px); }

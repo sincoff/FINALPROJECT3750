@@ -141,6 +141,10 @@
     movesLog: document.getElementById('moves-log'),
     backToLobbyBtn: document.getElementById('back-to-lobby-btn'),
     explosion: document.getElementById('hit-explosion'),
+    resultModal: document.getElementById('game-result-modal'),
+    resultTitle: document.getElementById('result-title'),
+    resultMessage: document.getElementById('result-message'),
+    resultCloseBtn: document.getElementById('result-close-btn'),
   };
 
   const state = {
@@ -158,6 +162,7 @@
     localShips: [],
     myUsedCells: new Set(),
     draggingShipLength: null,
+    finishedPopupGameId: null,
   };
 
   function setStatus(msg) { ui.status.textContent = msg; }
@@ -244,6 +249,45 @@
       }
       ui.shipPalette.appendChild(token);
     }
+  }
+
+  function hideResultModal() {
+    if (!ui.resultModal) return;
+    ui.resultModal.classList.add('hidden');
+  }
+
+  function showResultModal(title, message) {
+    if (!ui.resultModal || !ui.resultTitle || !ui.resultMessage) return;
+    ui.resultTitle.textContent = title;
+    ui.resultMessage.textContent = message;
+    ui.resultModal.classList.remove('hidden');
+  }
+
+  function maybeShowFinishedPopup(game) {
+    if (!game || game.status !== 'finished') return;
+    const gid = game.game_id ?? state.currentGameId;
+    if (gid == null || state.finishedPopupGameId === gid) return;
+
+    const players = Array.isArray(game.players) ? game.players : [];
+    const winnerFromBoard = players.find((p) => Number.isInteger(p.ships_remaining) && p.ships_remaining > 0);
+    const winnerId = game.winner_id ?? (winnerFromBoard ? winnerFromBoard.player_id : null);
+
+    const winnerName = winnerId != null
+      ? (state.playersById[winnerId] || `Player ${winnerId}`)
+      : 'Unknown';
+    const me = players.find((p) => p.player_id === state.playerId);
+    const iLost = !!me && Number.isInteger(me.ships_remaining) && me.ships_remaining <= 0;
+    const iWon = winnerId != null && winnerId === state.playerId;
+
+    if (iWon) {
+      showResultModal('Victory!', `You won this match. Great work, Commander.`);
+    } else if (iLost) {
+      showResultModal('Defeat', `You were eliminated. Winner: ${winnerName}.`);
+    } else {
+      showResultModal('Match Finished', `Winner: ${winnerName}.`);
+    }
+
+    state.finishedPopupGameId = gid;
   }
 
   function tryPlaceShipAt(r, c, shipLength) {
@@ -617,7 +661,10 @@
     if (!state.moves.length) ui.movesLog.innerHTML = '<div class="list-row">No moves yet.</div>';
 
     await refreshStats();
-    if (game.status === 'finished') setStatus('Match finished. Winner decided.');
+    if (game.status === 'finished') {
+      setStatus('Match finished. Winner decided.');
+      maybeShowFinishedPopup(game);
+    }
   }
 
   function onPlaceCellClick(r, c) {
@@ -799,6 +846,8 @@
   async function backToLobby() {
     state.currentGameId = null;
     state.localShips = [];
+    state.finishedPopupGameId = null;
+    hideResultModal();
     updatePlacementLabel();
     renderShipPalette();
     showScreen('lobby');
@@ -842,6 +891,7 @@
       renderPlacementPreview();
     });
     ui.submitShipsBtn.addEventListener('click', submitShips);
+    if (ui.resultCloseBtn) ui.resultCloseBtn.addEventListener('click', hideResultModal);
   }
 
   initServerOptions();

@@ -44,9 +44,13 @@
     localStorage.setItem(STORAGE_KEYS.identitiesByServer, JSON.stringify(all));
   }
   const CLASS_SERVER_OPTIONS = [
-    { label: 'Localhost (3000)', url: 'http://localhost:3000' },
     { label: 'Team 0x03 (Render)', url: 'https://finalproject3750.onrender.com' },
+    { label: 'Localhost (3000)', url: 'http://localhost:3000' },
   ];
+  const DEFAULT_SERVER_URL = 'https://finalproject3750.onrender.com';
+  const CONNECT_RETRY_ATTEMPTS = 4;
+  const CONNECT_TIMEOUT_MS = 10000;
+  const DEFAULT_MAX_PLAYERS = 2;
 
   const apiService = (() => {
     let baseUrl = '';
@@ -83,7 +87,7 @@
     return apiService.normalize(url).replace(/\/api$/i, '');
   }
 
-  async function fetchWithTimeout(url, options = {}, timeoutMs = 5000) {
+  async function fetchWithTimeout(url, options = {}, timeoutMs = CONNECT_TIMEOUT_MS) {
     const ctrl = new AbortController();
     const id = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
@@ -94,10 +98,10 @@
   }
 
   async function probeServerApi(baseUrl) {
-    const probes = ['/api', '/api/', '/api/health', '/api/version', '/api/players'];
+    const probes = ['/api/health', '/api'];
     for (const path of probes) {
       try {
-        const res = await fetchWithTimeout(`${baseUrl}${path}`, { method: 'GET' }, 5000);
+        const res = await fetchWithTimeout(`${baseUrl}${path}`, { method: 'GET' }, CONNECT_TIMEOUT_MS);
         // Any non-5xx response indicates the API route is reachable and responding.
         if (res.status < 500) return true;
       } catch (_) {
@@ -163,6 +167,7 @@
     myUsedCells: new Set(),
     draggingShipLength: null,
     finishedPopupGameId: null,
+    activeServerUrl: '',
   };
 
   function setStatus(msg) { ui.status.textContent = msg; }
@@ -427,6 +432,26 @@
     ui.serverIndicator.className = `indicator ${ok ? 'ok' : 'fail'}`;
     ui.serverIndicator.textContent = ok ? '✓' : '✕';
     ui.serverIndicatorText.textContent = text;
+  }
+
+  function setActiveServerUrl(url) {
+    const normalized = normalizeServerRoot(url);
+    state.activeServerUrl = normalized;
+    ui.serverInput.value = normalized;
+    ui.serverSelect.value = normalized;
+    if (normalized) apiService.setBaseUrl(normalized);
+  }
+
+  async function tryConnectWithRetries(baseUrl) {
+    for (let attempt = 1; attempt <= CONNECT_RETRY_ATTEMPTS; attempt++) {
+      updateServerIndicator(false, 'Waking server…');
+      setStatus(`Waking server… (${attempt}/${CONNECT_RETRY_ATTEMPTS})`);
+      try {
+        const isReachable = await probeServerApi(baseUrl);
+        if (isReachable) return true;
+      } catch (_) {}
+    }
+    return false;
   }
 
   function showScreen(name) {
@@ -771,17 +796,16 @@
   }
 
   async function connectServer() {
-    const selected = ui.serverInput.value.trim() || ui.serverSelect.value.trim();
+    const selected = state.activeServerUrl || ui.serverInput.value.trim() || ui.serverSelect.value.trim();
     const rootBase = normalizeServerRoot(selected);
     if (!rootBase) {
       setStatus('Enter a valid server URL.');
       return;
     }
     try {
-      const isReachable = await probeServerApi(rootBase);
+      setActiveServerUrl(rootBase);
+      const isReachable = await tryConnectWithRetries(rootBase);
       if (!isReachable) throw new Error('unreachable');
-      apiService.setBaseUrl(rootBase);
-      ui.serverInput.value = rootBase;
       updateServerIndicator(true, `Connected: ${rootBase}`);
       state.connected = true;
       setStatus(`Connected to ${rootBase}. Register or continue.`);
@@ -842,7 +866,7 @@
   async function createGame() {
     try {
       const gridSize = parseInt(ui.createGridSize.value, 10) || 10;
-      const maxPlayers = parseInt(ui.createMaxPlayers.value, 10) || 3;
+      const maxPlayers = parseInt(ui.createMaxPlayers.value, 10) || DEFAULT_MAX_PLAYERS;
       const out = await apiService.post('/api/games', { creator_id: state.playerId, grid_size: gridSize, max_players: maxPlayers });
       state.currentGameId = out.game_id ?? out.id;
       if (!state.currentGameId) throw new Error('Connected server returned an unsupported game payload');
@@ -878,16 +902,17 @@
       el.textContent = option.label;
       ui.serverSelect.appendChild(el);
     }
-    const stored = localStorage.getItem(STORAGE_KEYS.baseUrl);
-    if (stored) {
-      ui.serverInput.value = stored;
-    } else if (ui.serverSelect.options.length > 0) {
-      ui.serverInput.value = ui.serverSelect.options[0].value;
-    }
+    setActiveServerUrl(DEFAULT_SERVER_URL);
   }
 
   function bindEvents() {
     ui.connectBtn.addEventListener('click', connectServer);
+    ui.serverSelect.addEventListener('change', () => {
+      setActiveServerUrl(ui.serverSelect.value);
+    });
+    ui.serverInput.addEventListener('change', () => {
+      setActiveServerUrl(ui.serverInput.value);
+    });
     if (ui.themeToggleBtn) {
       ui.themeToggleBtn.addEventListener('click', () => {
         const next = document.body.classList.contains('light-mode') ? 'dark' : 'light';
@@ -910,9 +935,13 @@
   }
 
   initServerOptions();
+  if (ui.createMaxPlayers) ui.createMaxPlayers.value = String(DEFAULT_MAX_PLAYERS);
   applyTheme(localStorage.getItem(STORAGE_KEYS.theme) || 'dark');
   updatePlacementLabel();
   renderShipPalette();
   bindEvents();
   showScreen('none');
+  connectServer().catch(() => {
+    updateServerIndicator(false, 'Offline');
+  });
 })();
